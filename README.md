@@ -7,8 +7,8 @@ pot to land in the terminal it's running in.
 ![Kettle on the bar](docs/demo.png)
 
 Seven sessions above, from four sources: a herdr pane, hook-driven sessions,
-one posted by `kettle-emit`, and one arriving through the ssh relay — each
-agent wearing its own mark and naming its model from its agent's catalog.
+one posted by `kettle-emit`, and one arriving through the ssh relay. Each
+shows its agent's mark and the model read from that agent's catalog.
 
 Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
 including Pi — plus agents with hook systems running in plain terminal
@@ -110,15 +110,14 @@ sequences flow from the process to the terminal emulator and stop there, with no
 bus and no way for a third party to subscribe. The agent telling you directly is
 the only honest source of state.
 
-The six dialects were verified against each tool's source or official docs,
-not by analogy: Gemini renamed the prompt/turn events to
-`BeforeAgent`/`AfterAgent`; Qwen and droid say *why* they notified
-(`notification_type`), which outranks guessing from message text; Grok speaks
-camelCase, documents no Notification payload — so it is left unwired and a
-permission wait stays `simmering` rather than turning falsely `ready` — and
-identifies itself only through `GROK_*` environment variables, since every
-one of these tools sets `CLAUDE_PROJECT_DIR` as a compatibility alias and it
-therefore proves nothing.
+The six hook dialects differ in ways that matter. Gemini names the
+prompt/turn events `BeforeAgent`/`AfterAgent`. Qwen and droid include a
+`notification_type` field, which the hook prefers over guessing from message
+text. Grok sends camelCase keys, does not document its Notification payload —
+so that event is left unwired and a permission wait shows as `simmering`
+rather than a wrong `ready` — and is recognised by its `GROK_*` environment
+variables, because `CLAUDE_PROJECT_DIR` is set by several of these tools as a
+compatibility alias and identifies none of them.
 
 ## Any other agent
 
