@@ -138,7 +138,16 @@ Each pot names the model beside the agent — `Claude Code · Opus 5`.
 Where it comes from differs by agent, because the two hook systems disagree:
 Codex puts `model` in the hook payload, Claude Code does not. For Claude the
 hook seeks the last 256 KB of the session transcript (these files reach
-megabytes) and reads the newest assistant message. Remote sessions carry the
+megabytes) and reads the newest assistant message.
+
+Display names are resolved the way pi resolves models: agents already
+maintain model catalogs on disk — Codex refreshes `~/.codex/models_cache.json`,
+pi caches `~/.pi/agent/models-store.json` — so slugs are looked up there,
+preferring the emitting agent's own catalog when they disagree about the same
+slug. The catalogs are watched files, so a newly released model gets its
+proper name the moment the agent itself learns it exists, with no process
+spawned and nothing hardcoded. A capitalisation heuristic covers slugs no
+catalog knows. Remote sessions carry the
 string over the relay, where it is length-capped and character-stripped —
 it is self-reported and cosmetic, unlike host and window, which the relay
 always derives itself.

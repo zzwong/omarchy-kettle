@@ -1,4 +1,6 @@
 import QtQuick
+import Quickshell
+import Quickshell.Io
 
 // Unified pot model. Phase 1 has one source (herdr), but the shape is already
 // source-agnostic so the shell hook can merge in later without a rewrite.
@@ -280,14 +282,72 @@ QtObject {
     }
   }
 
-  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5.6-luna" -> "GPT-5.6-Luna".
-  // Version fragments join with a dot; everything else is a word. Checked
-  // against codex-cli's models_cache.json: every current display name is the
-  // slug hyphen-joined and capitalized, so GPT models keep their hyphens
-  // where Anthropic's names are words.
-  function prettyModel(m) {
+  // ---- model display names -------------------------------------------------
+  // Resolved the way pi resolves models: the agents already maintain catalogs
+  // on disk — Codex refreshes ~/.codex/models_cache.json (slug/display_name),
+  // pi caches ~/.pi/agent/models-store.json (id/name) — so a slug is looked up
+  // there first and the heuristic below only handles what no catalog knows.
+  // Watched files, no processes: a new model gets its proper name the moment
+  // the agent itself learns it exists. Kept as one map per catalog because
+  // catalogs disagree — pi and Codex both list gpt-5.6-luna and spell its
+  // name differently — and the agent that emitted the pot should win.
+  property var codexNames: ({})
+  property var piNames: ({})
+
+  function catalogAdd(map, id, name) {
+    if (typeof id === "string" && typeof name === "string" && id && name)
+      map[id.toLowerCase()] = String(name).slice(0, 48)
+  }
+
+  function rebuildModelNames() {
+    var cmap = {}
+    try {
+      var cx = JSON.parse(codexModelsFile.text())
+      var ms = Array.isArray(cx.models) ? cx.models : []
+      for (var i = 0; i < ms.length; i++) catalogAdd(cmap, ms[i].slug, ms[i].display_name)
+    } catch (e) { /* absent or malformed: the heuristic still covers it */ }
+    codexNames = cmap
+
+    var pmap = {}
+    try {
+      var store = JSON.parse(piModelsFile.text())
+      for (var prov in store) {
+        var pm = (store[prov] && Array.isArray(store[prov].models)) ? store[prov].models : []
+        for (var j = 0; j < pm.length; j++) catalogAdd(pmap, pm[j].id, pm[j].name)
+      }
+    } catch (e) {}
+    piNames = pmap
+  }
+
+  property FileView codexModelsFile: FileView {
+    path: (Quickshell.env("CODEX_HOME") || Quickshell.env("HOME") + "/.codex") + "/models_cache.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.rebuildModelNames()
+    // `text()` is stale inside the change signal itself; route through reload
+    // so onLoaded always parses fresh content.
+    onFileChanged: reload()
+  }
+  property FileView piModelsFile: FileView {
+    path: Quickshell.env("HOME") + "/.pi/agent/models-store.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.rebuildModelNames()
+    onFileChanged: reload()
+  }
+
+  // Fallback for slugs no catalog knows. "opus-5" -> "Opus 5", "haiku-4-5" ->
+  // "Haiku 4.5", "gpt-5.6-luna" -> "GPT-5.6-Luna". Version fragments join with
+  // a dot; everything else is a word. Checked against codex-cli's cache: every
+  // current display name is the slug hyphen-joined and capitalized, so GPT
+  // models keep their hyphens where Anthropic's names are words.
+  function prettyModel(m, kind) {
     var raw = String(m || "")
     if (!raw) return ""
+    var key = raw.toLowerCase()
+    var own = (kind === "codex") ? codexNames : (kind === "pi") ? piNames : null
+    var hit = (own && own[key]) || codexNames[key] || piNames[key]
+    if (hit) return hit
     var parts = raw.split("-")
     var out = []
     for (var i = 0; i < parts.length; i++) {

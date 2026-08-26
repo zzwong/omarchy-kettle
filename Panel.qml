@@ -464,7 +464,7 @@ Panel {
                   // Model belongs beside the agent, not in the subtitle: it is
                   // part of what is running, not what it is doing.
                   text: row.modelData.model
-                      ? row.modelData.label + "  ·  " + store.prettyModel(row.modelData.model)
+                      ? row.modelData.label + "  ·  " + store.prettyModel(row.modelData.model, row.modelData.agentKind)
                       : row.modelData.label
                   color: row.isMurky ? Color.muted : root.severityColor(row.modelData.state)
                   font.family: root.bar.fontFamily
