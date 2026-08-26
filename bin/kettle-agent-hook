@@ -35,8 +35,7 @@ except Exception:
     sys.exit(0)
 def g(*keys):
     # First key present wins: snake_case is the Claude-family convention,
-    # camelCase is Grok Build (verified against docs.x.ai — its payloads are
-    # hookEventName/sessionId with no transcript path at all).
+    # camelCase is Grok Build.
     for k in keys:
         v = d.get(k)
         if v:
@@ -100,11 +99,10 @@ case ${event,,} in
 esac
 
 # Label the pot by whichever agent actually produced the event. Almost none
-# of them say so in the payload (Codex verified live; the others verified in
-# source/docs), so identity comes from three tiers: an explicit agent_type,
-# then the env vars each tool injects into hook processes, then the
-# transcript's shape. CLAUDE_PROJECT_DIR proves nothing — Qwen, Gemini and
-# droid all set it as a compatibility alias.
+# say so in the payload, so identity comes from three tiers: an explicit
+# agent_type, then the env vars each tool injects into hook processes, then
+# the transcript's shape. CLAUDE_PROJECT_DIR proves nothing — Qwen, Gemini
+# and droid all set it as a compatibility alias.
 agent=${agent_type:-}
 case ${agent,,} in
   *codex*)  agent="codex"  ;;

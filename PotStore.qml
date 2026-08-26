@@ -343,12 +343,10 @@ QtObject {
   }
 
   // ---- model display names -------------------------------------------------
-  // Resolved the way pi resolves models: the agents already maintain catalogs
-  // on disk — Codex refreshes ~/.codex/models_cache.json (slug/display_name),
-  // pi caches ~/.pi/agent/models-store.json (id/name) — so a slug is looked up
-  // there first and the heuristic below only handles what no catalog knows.
-  // Watched files, no processes: a new model gets its proper name the moment
-  // the agent itself learns it exists. Kept as one map per catalog because
+  // Agents already maintain model catalogs on disk — Codex's
+  // models_cache.json (slug/display_name), pi's models-store.json (id/name) —
+  // so slugs are looked up there and the heuristic below only handles what no
+  // catalog knows. Watched files: no process is ever spawned for a name. Kept as one map per catalog because
   // catalogs disagree — pi and Codex both list gpt-5.6-luna and spell its
   // name differently — and the agent that emitted the pot should win.
   property var codexNames: ({})

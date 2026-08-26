@@ -20,10 +20,9 @@ GEMINI_SETTINGS="$HOME/.gemini/settings.json"
 FACTORY_HOOKS="$HOME/.factory/hooks.json"
 GROK_HOOK_FILE="$HOME/.grok/hooks/kettle.json"
 
-# Event vocabularies, verified against each tool's source or official docs:
-# Claude fires Notification for both permission gates and the idle nudge (the
-# hook tells them apart); Codex and Qwen have an explicit PermissionRequest;
-# Gemini renamed the prompt/turn pair to BeforeAgent/AfterAgent; Grok's
+# Per-tool event vocabularies. Claude fires Notification for both permission
+# gates and the idle nudge (the hook tells them apart); Codex and Qwen have an
+# explicit PermissionRequest; Gemini renamed the prompt/turn pair; Grok's
 # Notification payload is undocumented, so it is left unwired — a silent
 # permission wait stays "simmering" rather than turning falsely "ready".
 CLAUDE_EVENTS=(SessionStart UserPromptSubmit Notification Stop SessionEnd)

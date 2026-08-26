@@ -3,10 +3,8 @@
 #
 # herdr's snapshot exposes no model and no transcript path, but pi keys its
 # session logs by working directory — sessions/--<cwd with / as ->--/ — and
-# stamps each assistant message with the model that produced it. That lets a
-# herdr pi pot name its model with the same transcript-tail trick the agent
-# hook already uses for Claude, spending one short process per state change
-# rather than anything per poll.
+# stamps each assistant message with the model that produced it: the same
+# transcript-tail trick the agent hook uses for Claude.
 set -uo pipefail
 
 cwd=${1:-}

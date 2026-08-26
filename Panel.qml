@@ -13,9 +13,8 @@ import qs.Ui
 Panel {
   id: root
 
-  // The registry's canonical widget id — must match the manifest id. The IPC
-  // target below stays the short "kettle" on purpose: it is typed by hand in
-  // keybindings, and the develop guide mandates the id match only here.
+  // Must match the manifest id — the registry's moduleWidgets() keys on it.
+  // The IPC target stays the short "kettle": it is typed by hand in keybindings.
   moduleName: "zzwong.kettle"
   ipcTarget: "kettle"
   manageIpc: false   // this panel owns the single IpcHandler for its target
@@ -140,8 +139,8 @@ Panel {
       onStreamFinished: {
         var addr = String(text || "").trim()
         if (addr.length > 0) return root.focusWindow(addr)
-        // Refusing to guess is right; refusing silently is not. This is the
-        // one failure a user can actually fix (set herdrWindow), so say so.
+        // The one failure the user can fix themselves (set herdrWindow), so
+        // it must not fail silently.
         console.warn("kettle: cannot locate herdr's window — herdr's internal "
           + "tab switched, but nothing was raised. On a single-process "
           + "terminal set \"herdrWindow\" to a title substring (see README).")
