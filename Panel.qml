@@ -72,6 +72,17 @@ Panel {
   // window reports the same PID and the process tree cannot tell them apart.
   readonly property string herdrWindow: setting("herdrWindow", "")
 
+  // More than one distinct host among the pots (local counts as one) switches
+  // the list into grouped rendering: host header rows, no per-row host tag.
+  readonly property bool grouped: {
+    var seen = {}, n = 0
+    for (var i = 0; i < store.pots.length; i++) {
+      var h = String(store.pots[i].host || "")
+      if (!seen[h]) { seen[h] = true; n++ }
+    }
+    return n > 1
+  }
+
   readonly property string pluginDir:
     Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
 
@@ -383,10 +394,33 @@ Panel {
           Repeater {
             model: store.pots
 
-            Rectangle {
-              id: row
+            Column {
+              id: entry
               required property var modelData
               required property int index
+              width: parent.width
+              spacing: Style.space(2)
+
+              // Host header above the first pot of each remote group. The
+              // local group leads the sorted list and needs no label.
+              Text {
+                visible: root.grouped && String(entry.modelData.host || "") !== ""
+                  && (entry.index === 0
+                      || String(store.pots[entry.index - 1].host || "") !== String(entry.modelData.host))
+                text: "@" + entry.modelData.host
+                color: Qt.darker(root.bar.foreground, 1.4)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+                leftPadding: Style.space(8)
+                topPadding: Style.space(4)
+              }
+
+            Rectangle {
+              id: row
+              readonly property var modelData: entry.modelData
+              readonly property int index: entry.index
 
               readonly property bool isMurky: modelData.state === "murky"
 
@@ -488,15 +522,21 @@ Panel {
                     // informative — the duration and the host.
                     var bits = []
                     if (row.modelData.project) bits.push(row.modelData.project)
-                    if (row.modelData.host) bits.push("@" + row.modelData.host)
+                    // The group header carries the host when grouping is on.
+                    if (row.modelData.host && !root.grouped) bits.push("@" + row.modelData.host)
                     var ran = store.ranWord(row.modelData)
                     if (ran && !store.isLive(row.modelData.state)) bits.push(ran)
-                    // Kept only where the word says more than the glyph can.
-                    if (row.modelData.state === "needs-attention") bits.push("needs approval")
+                    var msg = String(row.modelData.message || "")
+                    if (row.modelData.state === "needs-attention") bits.push(msg || "needs approval")
                     else if (row.modelData.state === "burnt") bits.push("failed")
                     else if (row.modelData.state === "murky") bits.push("unclear")
+                    // A simmering pot's detail is its prompt.
+                    else if (msg && row.modelData.state === "simmering") bits.push(msg)
                     return bits.join(" · ")
                   }
+                  // Plain text always: the message field is agent- and
+                  // remote-controlled input.
+                  textFormat: Text.PlainText
                   color: Qt.darker(root.bar.foreground, 1.6)
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.caption
@@ -515,6 +555,7 @@ Panel {
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
               }
+            }
             }
           }
         }

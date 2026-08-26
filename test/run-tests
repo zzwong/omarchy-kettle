@@ -91,6 +91,10 @@ test_hook() {
   out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s2","cwd":"/p","agent_type":"claude"}')
   is "agent_type claude preserved" "$(field "$out" agent)" "claude"
 
+  # A prompt rides the message field: no event carries both.
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p","prompt":"refactor the poller"}')
+  is "prompt becomes the pot detail" "$(field "$out" message)" "refactor the poller"
+
   # Payloads containing shell metacharacters must survive the transport.
   out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"weird '\''quotes'\'' and $(rm -rf /) backticks"}')
   has "hostile message survives base64 transport" "$(field "$out" message)" "backticks"

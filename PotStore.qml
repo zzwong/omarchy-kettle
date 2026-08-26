@@ -24,7 +24,15 @@ QtObject {
     var out = herdrPots.slice()
     for (var k in hookPots) if (hookPots[k]) out.push(hookPots[k])
     for (var r in remotePots) if (remotePots[r]) out.push(remotePots[r])
-    return out
+    // Local pots first, then remote hosts alphabetically. The sort is stable
+    // (original position breaks ties) so rows never shuffle between polls.
+    return out.map(function(p, i) { return [p, i] })
+      .sort(function(a, b) {
+        var ha = a[0].host || "", hb = b[0].host || ""
+        if (ha !== hb) return ha < hb ? -1 : 1
+        return a[1] - b[1]
+      })
+      .map(function(e) { return e[0] })
   }
 
   // Pots that earn a place on the bar count. ready/burnt stay listed in the
@@ -312,6 +320,7 @@ QtObject {
       windowAddr: canonAddr(ev.window),
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
+      message: String(ev.message || "").slice(0, 160),
       // Read from the session transcript by the hook: the payload itself
       // carries no model field.
       model: String(ev.model || "")
