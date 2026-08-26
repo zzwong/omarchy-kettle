@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "kettle",
+  "name": "Kettle",
+  "version": "0.1.0",
+  "author": "zzwong",
+  "description": "Long-running work as pots on the bar: herdr agent sessions, with jump-to-pane and done/blocked notifications.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Kettle",
+    "description": "What's cooking: agents and long-running commands",
+    "category": "Productivity",
+    "allowMultiple": false
+  }
+}

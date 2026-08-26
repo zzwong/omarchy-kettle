@@ -1,0 +1,8 @@
+# Local runtime state — never belongs in the repo
+*.kettle-tmp
+*.kettle-bak
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~

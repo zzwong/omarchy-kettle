@@ -1,0 +1,6 @@
+#!/bin/bash
+# Reads one base64 kettle event per line and hands it to the widget.
+while IFS= read -r line; do
+  [[ -z $line ]] && continue
+  omarchy-shell kettle agentEvent "$line" >/dev/null 2>&1
+done

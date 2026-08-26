@@ -1,0 +1,59 @@
+#!/bin/bash
+# Print the Hyprland window address hosting the herdr TUI, or nothing.
+#
+# `herdr agent focus` only switches herdr's internal tab; it does not raise the
+# OS window. Kettle therefore has to find that window itself.
+#
+# Tier 1: an explicit title substring, configured by the user. Needed for
+#         single-process terminals (ghostty --gtk-single-instance, foot
+#         --server, kitty single-instance) where every window shares one PID
+#         and the process tree cannot disambiguate them.
+# Tier 2: process-subtree match — find the client whose PID owns a `herdr`
+#         descendant. Works for Alacritty, foot (no server), kitty (no
+#         single-instance). Deliberately refuses to guess when more than one
+#         window matches, because focusing the wrong window is worse than
+#         focusing none.
+
+set -uo pipefail
+
+match=${1:-}
+clients=$(hyprctl clients -j 2>/dev/null) || exit 0
+[[ -z $clients ]] && exit 0
+
+if [[ -n $match ]]; then
+  python3 - "$clients" "$match" <<'PY'
+import json, sys
+clients, needle = json.loads(sys.argv[1]), sys.argv[2].lower()
+for c in clients:
+    if needle in (c.get("title") or "").lower() or needle in (c.get("class") or "").lower():
+        print(c["address"]); break
+PY
+  exit 0
+fi
+
+# Collect every pid that has a `herdr` process somewhere beneath it.
+herdr_pids=$(pgrep -x herdr || true)
+[[ -z $herdr_pids ]] && exit 0
+
+roots=""
+for hp in $herdr_pids; do
+  p=$hp
+  # Walk up to 8 levels toward the compositor, recording every ancestor.
+  for _ in 1 2 3 4 5 6 7 8; do
+    pp=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null) || break
+    [[ -z $pp || $pp -le 1 ]] && break
+    roots+=" $pp"
+    p=$pp
+  done
+done
+
+python3 - "$clients" "$roots" <<'PY'
+import json, sys
+clients = json.loads(sys.argv[1])
+roots = {int(x) for x in sys.argv[2].split() if x.isdigit()}
+hits = [c["address"] for c in clients if c.get("pid") in roots]
+# One unambiguous window, or nothing at all. A shared-PID terminal produces
+# several hits and must fall through to the configured title instead.
+if len(hits) == 1:
+    print(hits[0])
+PY
