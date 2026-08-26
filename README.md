@@ -53,17 +53,27 @@ theme, and a 15-pixel bar slot.
 ## Install
 
 ```bash
-git clone https://github.com/zzwong/omarchy-kettle ~/.config/omarchy/plugins/kettle
-~/.config/omarchy/plugins/kettle/bin/kettle-install
-omarchy plugin enable kettle right
+omarchy plugin add https://github.com/zzwong/omarchy-kettle.git --enable
+~/.config/omarchy/plugins/zzwong.kettle/bin/kettle-install
 ```
 
-`kettle-install` merges hook entries into `~/.claude/settings.json` and
-`~/.codex/hooks.json`, pointing at wherever you cloned the repo. It is
-idempotent, preserves your existing hooks and settings, and `--remove` reverses
-it cleanly. `--check` reports status without changing anything.
+`omarchy plugin add` clones the repo into
+`~/.config/omarchy/plugins/zzwong.kettle/`, validates the manifest, and
+enables the widget (it defaults to the right bar section). Updating later is
+`omarchy plugin update zzwong.kettle`, which shows a diff before
+fast-forwarding; removal is `omarchy plugin remove zzwong.kettle`.
 
-herdr needs no setup — Kettle polls it directly.
+The second line is deliberately separate: Omarchy's installer never executes
+plugin code, so anything that touches files outside the plugin directory has
+to be a step you run yourself. `kettle-install` merges hook entries into
+`~/.claude/settings.json` and `~/.codex/hooks.json`, pointing at wherever the
+repo lives. It is idempotent, preserves your existing hooks and settings, and
+`--remove` reverses it cleanly — run it before `omarchy plugin remove`, which
+deletes the scripts the hooks point at. `--check` reports status without
+changing anything.
+
+herdr needs no setup — Kettle polls it directly. Without `kettle-install` the
+herdr side works fully; only sessions outside herdr go unseen.
 
 ## How each source works
 
@@ -111,7 +121,7 @@ herdr sets no window title of its own, so on a single-process terminal there is
 no way to identify its window automatically. Set a title substring:
 
 ```json
-{ "id": "kettle", "herdrWindow": "herdr" }
+{ "id": "zzwong.kettle", "herdrWindow": "herdr" }
 ```
 
 and launch herdr with a matching title, e.g. `ghostty --title=herdr -e herdr`.
@@ -219,7 +229,9 @@ That is irreducible, because the hook runs as that user.
 
 ## Settings
 
-Set these on the widget's entry in `~/.config/omarchy/shell.json`:
+All three are declared in the manifest, so the shell's widget settings UI
+offers them directly; they can also be set by hand on the widget's entry in
+`~/.config/omarchy/shell.json`:
 
 | Key | Default | Meaning |
 |---|---|---|

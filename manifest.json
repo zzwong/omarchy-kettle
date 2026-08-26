@@ -1,9 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "kettle",
+  "id": "zzwong.kettle",
   "name": "Kettle",
   "version": "0.1.0",
   "author": "zzwong",
+  "license": "MIT",
   "description": "Long-running work as pots on the bar: herdr agent sessions, with jump-to-pane and done/blocked notifications.",
   "kinds": ["bar-widget"],
   "entryPoints": {
@@ -13,6 +14,32 @@
     "displayName": "Kettle",
     "description": "What's cooking: agents and long-running commands",
     "category": "Productivity",
-    "allowMultiple": false
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showCount": true,
+      "notifications": true,
+      "herdrWindow": ""
+    },
+    "schema": [
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show live count beside the glyph",
+        "defaultValue": true
+      },
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Desktop notification on state changes",
+        "defaultValue": true
+      },
+      {
+        "key": "herdrWindow",
+        "type": "string",
+        "label": "Title substring of herdr's window",
+        "defaultValue": ""
+      }
+    ]
   }
 }

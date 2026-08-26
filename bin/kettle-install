@@ -132,7 +132,7 @@ if [[ $mode == install ]]; then
   cat <<EOF
 
 Next:
-  omarchy plugin enable kettle right
+  omarchy plugin enable zzwong.kettle right
 
 herdr sessions need no setup at all. Agent sessions outside herdr pick the
 hooks up on their next event; sessions already running when you installed

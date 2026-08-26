@@ -208,8 +208,8 @@ print(base64.b64encode(json.dumps({'agent':'claude','id':'testsuite1','state':'g
 # ----------------------------------------------------------------- structure
 test_structure() {
   echo "structure"
-  is "manifest id is not the clone-convention form" \
-     "$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")" "kettle"
+  is "manifest id is the namespaced author.name form" \
+     "$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")" "zzwong.kettle"
   hasnt "no real name in manifest" "$(cat manifest.json)" "REDACTED"
   hasnt "no home path baked into QML" "$(cat ./*.qml)" "/home/user"
   # Check each file with the interpreter its shebang actually names — bin/
