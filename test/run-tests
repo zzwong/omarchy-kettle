@@ -228,7 +228,88 @@ test_structure() {
     && ok "parses (sh): remote stream loop" || no "parses (sh): remote stream loop" "syntax error"
 }
 
-groups=(${1:-structure hook install relay})
+# --------------------------------------------------------------- guard tests
+# The line guard is a pure stdin->stdout filter, so it needs no remote.
+test_guard() {
+  echo "line-guard"
+  local g="$ROOT/bin/kettle-line-guard"
+
+  is "passes short lines through" \
+     "$(printf 'a\nb\n' | "$g" 2>/dev/null | tr '\n' ',')" "a,b,"
+
+  is "exits 0 on clean EOF" \
+     "$(printf 'x\n' | "$g" >/dev/null 2>&1; echo $?)" "0"
+
+  # A remote emitting megabytes with no newline would grow SplitParser's
+  # buffer without limit; the guard must die instead of forwarding.
+  local big; big=$(python3 -c "print('z'*200000, end='')")
+  is "refuses an over-long line" \
+     "$(printf '%s' "$big" | "$g" >/dev/null 2>&1; echo $?)" "1"
+
+  is "over-long line produces no output" \
+     "$(printf '%s' "$big" | "$g" 2>/dev/null | wc -c | tr -d ' ')" "0"
+
+  # Lines arriving in fragments must still be reassembled.
+  is "reassembles split writes" \
+     "$(python3 -c "
+import subprocess,sys
+p=subprocess.Popen(['$g'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+p.stdin.write(b'hel'); p.stdin.flush(); p.stdin.write(b'lo\n'); p.stdin.close()
+sys.stdout.write(p.stdout.read().decode().strip())")" "hello"
+}
+
+# -------------------------------------------------------------- stream tests
+# The remote loop's projection and framing, exercised with a stub herdr.
+test_stream() {
+  echo "herdr-stream"
+  local T; T=$(mktemp -d)
+
+  # Stub herdr emitting a fixed snapshot.
+  cat > "$T/herdr" <<'STUB'
+#!/bin/bash
+cat "$KETTLE_STUB_SNAPSHOT"
+STUB
+  chmod +x "$T/herdr"
+  cat > "$T/snap.json" <<'J'
+{"result":{"snapshot":{"agents":[{"pane_id":"w1:p1","agent":"claude","agent_status":"working","cwd":"/srv/app","terminal_title_stripped":"Claude Code","state_change_seq":7}],"focused_pane_id":"w1:p1"}}}
+J
+
+  local out
+  out=$(KETTLE_HERDR="$T/herdr" KETTLE_STUB_SNAPSHOT="$T/snap.json" \
+        KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+        timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" 2>/dev/null)
+
+  has "emits a snapshot line" "$out" "S "
+  has "emits a heartbeat" "$out" "H"
+
+  local decoded
+  decoded=$(printf '%s\n' "$out" | grep '^S ' | head -1 | cut -d' ' -f2 | python3 -c "
+import base64,json,sys
+d=json.loads(base64.b64decode(sys.stdin.read().strip()))
+a=d['agents'][0]
+print(a['id'], a['state'], a['agent'], a['seq'], len(d['agents']))" 2>/dev/null)
+  is "projection keeps the fields the bar renders" "$decoded" "w1:p1 working claude 7 1"
+
+  # Unchanged state must stay quiet: that silence is the whole design.
+  local count
+  count=$(printf '%s\n' "$out" | grep -c '^S ')
+  is "emits one S line for unchanged state" "$count" "1"
+
+  # herdr failing must say so explicitly, not fall silent with stale pots.
+  cat > "$T/herdr-dead" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+  chmod +x "$T/herdr-dead"
+  local dead
+  dead=$(KETTLE_HERDR="$T/herdr-dead" KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+         timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" 2>/dev/null | head -1)
+  is "emits an explicit down marker" "$dead" "D"
+
+  rm -rf "$T"
+}
+
+groups=(${1:-structure hook install guard stream relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
