@@ -4,6 +4,12 @@ Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes, fails, or needs you. Click a
 pot to land in the terminal it's running in.
 
+![Kettle on the bar](docs/demo.png)
+
+Six sessions above, from four sources: a herdr pane, hook-driven sessions,
+one posted by `kettle-emit`, and one arriving through the ssh relay — each
+naming its model from its agent's own catalog.
+
 Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
 including Pi — plus **Claude Code** and **Codex** running in plain terminal
 windows outside any multiplexer, and sessions on remote hosts over ssh.
