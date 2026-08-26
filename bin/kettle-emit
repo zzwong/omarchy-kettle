@@ -1,0 +1,101 @@
+#!/bin/bash
+# Post one lifecycle event to Kettle for an agent it has no hook for.
+#
+# Kettle ships hooks only for Claude Code and Codex, because only they have
+# hook systems to install into. Everything else — opencode, hermes, a build
+# script, anything — can still be a pot: the widget's ingestion is a stable
+# contract, and this script is the whole integration. Call it from the tool's
+# own plugin/hook/wrapper at the moments that matter:
+#
+#   kettle-emit --agent opencode --id "$SESSION" --state working  --cwd "$PWD"
+#   kettle-emit --agent opencode --id "$SESSION" --state blocked  --message "needs approval"
+#   kettle-emit --agent opencode --id "$SESSION" --state finished --model some-model
+#   kettle-emit --agent opencode --id "$SESSION" --state gone
+#
+# States: register (session started, clear stale pot), working, blocked,
+# finished, gone. The agent name is free-form: unknown agents get a neutral
+# mark and a capitalized label. --window takes a Hyprland window address and
+# becomes the pot's jump target; without it the pot is informational.
+#
+# On a remote host (installed by kettle-remote, so ~/.config/kettle/relay.conf
+# exists and there is no omarchy-shell) the event goes through the ssh reverse
+# forward instead, exactly like the shipped hook.
+set -uo pipefail
+
+agent="" id="" state="" cwd="" model="" message="" window="" focused="false" dry=0
+
+usage() {
+  sed -n 's/^#\( \|$\)//p' "$0" | sed -n '2,20p'
+  exit "${1:-0}"
+}
+
+while (( $# > 0 )); do
+  case $1 in
+    --agent)   agent=${2:-}; shift 2 ;;
+    --id)      id=${2:-}; shift 2 ;;
+    --state)   state=${2:-}; shift 2 ;;
+    --cwd)     cwd=${2:-}; shift 2 ;;
+    --model)   model=${2:-}; shift 2 ;;
+    --message) message=${2:-}; shift 2 ;;
+    --window)  window=${2:-}; shift 2 ;;
+    --focused) focused="true"; shift ;;
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage 0 ;;
+    *) echo "kettle-emit: unknown option $1" >&2; usage 1 ;;
+  esac
+done
+
+[[ -n $agent && -n $id && -n $state ]] \
+  || { echo "kettle-emit: --agent, --id and --state are required" >&2; exit 1; }
+
+# Same charset the relay enforces; rejecting here gives the caller an error
+# instead of a silently dropped event.
+[[ $id =~ ^[A-Za-z0-9:_-]{1,64}$ ]] \
+  || { echo "kettle-emit: id must match [A-Za-z0-9:_-]{1,64}" >&2; exit 1; }
+
+case $state in
+  register|working|blocked|finished|gone) ;;
+  *) echo "kettle-emit: state must be register|working|blocked|finished|gone" >&2; exit 1 ;;
+esac
+
+b64=$(python3 -c '
+import base64, json, sys
+print(base64.b64encode(json.dumps({
+    "source":  "agent",
+    "agent":   sys.argv[1],
+    "id":      sys.argv[2],
+    "state":   sys.argv[3],
+    "cwd":     sys.argv[4],
+    "message": sys.argv[5][:160],
+    "window":  sys.argv[6],
+    "focused": sys.argv[7] == "true",
+    "model":   sys.argv[8],
+}).encode()).decode())
+' "$agent" "$id" "$state" "$cwd" "$message" "$window" "$focused" "$model") || exit 1
+
+if (( dry )); then
+  printf '%s' "$b64" | base64 -d
+  echo
+  exit 0
+fi
+
+RELAY_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/kettle/relay.conf"
+if [[ ! -x $(command -v omarchy-shell 2>/dev/null || echo /nonexistent) && -f $RELAY_CONF ]]; then
+  relay_port=$(sed -n 's/^port=//p' "$RELAY_CONF" | head -1)
+  relay_token=$(sed -n 's/^token=//p' "$RELAY_CONF" | head -1)
+  [[ -z ${relay_port:-} || -z ${relay_token:-} ]] && exit 0
+  KETTLE_RELAY_TOKEN="$relay_token" python3 -c '
+import socket, sys, os
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), 2)
+    s.settimeout(2)
+    s.sendall(f"v1 {os.environ[\"KETTLE_RELAY_TOKEN\"]} {sys.argv[2]}\n".encode())
+    s.recv(64)
+except Exception:
+    pass  # relay down: drop the event, never fail the caller
+' "$relay_port" "$b64" >/dev/null 2>&1
+  exit 0
+fi
+
+omarchy-shell kettle agentEvent "$b64" >/dev/null 2>&1 || true
+exit 0

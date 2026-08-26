@@ -334,6 +334,27 @@ test_pimodel() {
   rm -rf "$T"
 }
 
+# ---------------------------------------------------------------- emit tests
+# kettle-emit is the public integration contract; its payload shape is what
+# third parties build against, so pin it.
+test_emit() {
+  echo "emit"
+  local out
+  out=$("$ROOT/bin/kettle-emit" --agent opencode --id oc1 --state working \
+        --cwd /srv/app --model some-model --dry-run)
+  is "payload carries the contract fields" \
+     "$(printf '%s' "$out" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d['source'], d['agent'], d['id'], d['state'], d['cwd'], d['model'], d['focused'])")" \
+     "agent opencode oc1 working /srv/app some-model False"
+
+  "$ROOT/bin/kettle-emit" --agent x --id '../etc' --state working >/dev/null 2>&1 \
+    && no "path-like id rejected" "accepted" || ok "path-like id rejected"
+  "$ROOT/bin/kettle-emit" --agent x --id ok1 --state exploded >/dev/null 2>&1 \
+    && no "unknown state rejected" "accepted" || ok "unknown state rejected"
+}
+
 # ------------------------------------------------------------ coherence tests
 # The suite was green while two user-visible defects sat in the QML layer: a
 # documented state nothing could produce, and pots that outlived their host.
@@ -409,7 +430,7 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     || ok "remote path is not interpolated into a local shell"
 }
 
-groups=(${1:-structure coherence hook install guard stream pimodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

@@ -100,6 +100,36 @@ sequences flow from the process to the terminal emulator and stop there, with no
 bus and no way for a third party to subscribe. The agent telling you directly is
 the only honest source of state.
 
+## Any other agent
+
+Two paths, neither of which requires changing Kettle.
+
+**Inside herdr, it already works.** herdr detects some twenty agent TUIs —
+opencode, gemini, amp, grok, hermes, cursor, and more — and Kettle renders
+whatever herdr reports: unknown agents get a neutral mark and a capitalized
+label rather than a wrong logo.
+
+**Outside herdr, the ingestion is a public contract.** Kettle ships hooks
+only for Claude Code and Codex because only they have hook systems to
+install into; anything else integrates by posting its own lifecycle events
+with `bin/kettle-emit` from whatever extension point the tool offers (a
+plugin, a wrapper, a shell alias):
+
+```bash
+kettle-emit --agent opencode --id "$SESSION" --state working  --cwd "$PWD"
+kettle-emit --agent opencode --id "$SESSION" --state blocked  --message "needs approval"
+kettle-emit --agent opencode --id "$SESSION" --state finished --model some-model
+kettle-emit --agent opencode --id "$SESSION" --state gone
+```
+
+States are `register | working | blocked | finished | gone`. `--window`
+takes a Hyprland window address and becomes the pot's jump target; without
+it the pot is informational. On a host set up by `kettle-remote install`,
+the same command posts through the ssh relay instead — the script detects
+which side it is on. Model slugs are resolved against the agent catalogs
+described under [Model](#model), so `--model deepseek-v4-flash` renders as
+its proper display name.
+
 ## Jumping to a window
 
 Clicking a pot has to find the right window, which is harder than it sounds.
@@ -266,7 +296,7 @@ escalation, the bar is the truth.
 
 ```bash
 ./test/run-tests           # everything
-./test/run-tests hook      # one group: structure | coherence | hook |
+./test/run-tests hook      # one group: structure | coherence | hook | emit |
                            #   install | guard | stream | pimodel | relay
 ```
 
