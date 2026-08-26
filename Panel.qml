@@ -134,6 +134,11 @@ Panel {
     }
   }
 
+  Relay {
+    id: relay
+    store: store
+  }
+
   PotStore {
     id: store
     onPotChanged: function(pot, fromState) {
@@ -346,9 +351,30 @@ Panel {
                 id: hover
                 anchors.fill: parent
                 hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                 cursorShape: row.isMurky ? Qt.ArrowCursor : Qt.PointingHandCursor
                 onEntered: root.cursor = row.index
-                onClicked: if (!row.isMurky) root.jump(row.modelData)
+                onClicked: function(mouse) {
+                  // Middle-click drops a pot without jumping — for a session
+                  // killed mid-turn, whose completion event never arrives.
+                  if (mouse.button === Qt.MiddleButton) {
+                    if (row.modelData.source === "agent") store.dropHookPot(row.modelData.key)
+                  } else if (!row.isMurky) {
+                    root.jump(row.modelData)
+                  }
+                }
+              }
+
+              AgentMark {
+                id: rowMark
+                agent: row.modelData.agentKind || ""
+                stroke: Qt.darker(root.bar.foreground, 1.35)
+                width: Style.font.bodySmall * 1.15
+                height: width
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                opacity: row.isMurky ? 0.45 : 0.9
               }
 
               Text {
@@ -357,8 +383,8 @@ Panel {
                 color: root.severityColor(row.modelData.state)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.title
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
+                anchors.left: rowMark.right
+                anchors.leftMargin: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
 
                 // Only needs-attention moves. Motion is reserved for the one
@@ -392,6 +418,7 @@ Panel {
                 Text {
                   text: {
                     var head = row.modelData.project ? row.modelData.project + " · " : ""
+                    if (row.modelData.host) head += "@" + row.modelData.host + " · "
                     var ran = store.ranWord(row.modelData)
                     // A finished pot reports how long it ran; a live one
                     // reports what it is doing.

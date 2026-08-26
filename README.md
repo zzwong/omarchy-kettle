@@ -4,8 +4,11 @@ Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes, fails, or needs you. Click a
 pot to land in the terminal it's running in.
 
-Kettle knows about **herdr** sessions, **Claude Code**, and **Codex** — including
-sessions running in plain terminal windows outside any multiplexer.
+Kettle knows about **herdr** sessions, **Claude Code**, **Codex** and **Pi** —
+including sessions in plain terminal windows outside any multiplexer, and
+sessions running on remote hosts over ssh.
+
+![The Kettle panel](docs/panel.png)
 
 ## Why
 
@@ -140,6 +143,16 @@ per-pot cooldown so a flapping agent notifies once a minute rather than once a
 flap, and coalescing that turns several near-simultaneous completions into one
 summary. The bar always shows true state regardless — notifications are the
 escalation, the bar is the truth.
+
+## Testing
+
+```bash
+./test/run-tests           # everything
+./test/run-tests hook      # one group: structure | hook | install | relay
+```
+
+No framework, no dependencies beyond bash and python3. The relay group needs a
+running shell with the plugin loaded and skips itself cleanly otherwise.
 
 ## Requirements
 

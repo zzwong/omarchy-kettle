@@ -131,7 +131,9 @@ QtObject {
   function ingest(ev) {
     if (!ev || !ev.id) return
     var map = Object.assign({}, hookPots)
-    var key = "agent:" + ev.id
+    // Host-scoped: two machines can hand out the same session id, and a
+    // remote pot must never overwrite a local one.
+    var key = "agent:" + (ev.host ? ev.host + ":" : "") + ev.id
     var was = map[key]
     var now = Date.now()
 
@@ -168,15 +170,14 @@ QtObject {
       source: "agent",
       runStart: runStart,
       ranMs: ranMs,
-      label: ev.agent === "claude" ? "Claude Code"
-           : ev.agent === "codex"  ? "Codex"
-           : String(ev.agent || "agent"),
+      label: root.agentLabel(ev.agent),
       project: basename(String(ev.cwd || "")),
       state: state,
       since: (was && was.state === state) ? was.since : now,
       seq: -1,
       paneId: "",
       windowAddr: String(ev.window || ""),
+      host: String(ev.host || ""),
       agentKind: String(ev.agent || "")
     }
 
@@ -184,6 +185,18 @@ QtObject {
     hookPots = map
 
     if (!was || was.state !== state) root.potChanged(pot, was ? was.state : "")
+  }
+
+  // Display names for the agents we know; anything else keeps its own name
+  // rather than being forced into a guess.
+  function agentLabel(kind) {
+    switch (String(kind || "")) {
+      case "claude": return "Claude Code"
+      case "codex":  return "Codex"
+      case "pi":     return "Pi"
+      case "":       return "agent"
+      default:       return String(kind).charAt(0).toUpperCase() + String(kind).slice(1)
+    }
   }
 
   function hookList() {

@@ -1,0 +1,229 @@
+#!/bin/bash
+# Kettle test suite. No framework, no dependencies beyond bash + python3.
+#
+#   test/run-tests           run everything
+#   test/run-tests hook      run one group (hook | install | relay)
+#
+# The relay group needs a running Omarchy shell with the plugin loaded; it is
+# skipped automatically when the socket is absent, so the suite still passes
+# on a machine that is only checking the shell scripts.
+
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+ROOT=$PWD
+
+pass=0; fail=0; skip=0
+FAILED=()
+
+ok()   { pass=$((pass+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
+no()   { fail=$((fail+1)); FAILED+=("$1"); printf '  \033[31m✗\033[0m %s\n' "$1"; [[ -n ${2:-} ]] && printf '      %s\n' "$2"; }
+skipt(){ skip=$((skip+1)); printf '  \033[33m-\033[0m %s (skipped: %s)\n' "$1" "$2"; }
+
+is()   { [[ "$2" == "$3" ]] && ok "$1" || no "$1" "want [$3] got [$2]"; }
+has()  { [[ "$2" == *"$3"* ]] && ok "$1" || no "$1" "want substring [$3] in [$2]"; }
+hasnt(){ [[ "$2" != *"$3"* ]] && ok "$1" || no "$1" "unwanted substring [$3] in [$2]"; }
+
+# ---------------------------------------------------------------- hook tests
+# The hook is driven by stdin JSON and emits a base64 payload. We stub the
+# delivery command so nothing has to be running, then decode what it tried to
+# send. This is the layer where every field-mapping bug has lived.
+hook_emit() {
+  local payload=$1 tmp; tmp=$(mktemp -d)
+  cat > "$tmp/omarchy-shell" <<'STUB'
+#!/bin/bash
+# args: kettle agentEvent <b64>
+printf '%s' "${3:-}" > "$KETTLE_TEST_OUT"
+STUB
+  chmod +x "$tmp/omarchy-shell"
+  : > "$tmp/out"
+  KETTLE_TEST_OUT="$tmp/out" PATH="$tmp:$PATH" HYPRLAND_INSTANCE_SIGNATURE=test \
+    bash "$ROOT/bin/kettle-agent-hook" <<< "$payload" >/dev/null 2>&1
+  # the hook double-backgrounds delivery; give it a moment to land
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s $tmp/out ]] && break; sleep 0.1; done
+  local b64; b64=$(cat "$tmp/out" 2>/dev/null)
+  rm -rf "$tmp"
+  [[ -z $b64 ]] && { echo ""; return; }
+  python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.argv[1]).decode())" "$b64" 2>/dev/null
+}
+
+field() { python3 -c "
+import json,sys
+try: print(json.loads(sys.argv[1]).get(sys.argv[2],''))
+except Exception: print('')
+" "$1" "$2" 2>/dev/null; }
+
+test_hook() {
+  echo "hook"
+  local out
+
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/tmp/proj"}')
+  is "UserPromptSubmit maps to working" "$(field "$out" state)" "working"
+
+  out=$(hook_emit '{"hook_event_name":"Stop","session_id":"s1","cwd":"/tmp/proj"}')
+  is "Stop maps to finished" "$(field "$out" state)" "finished"
+
+  out=$(hook_emit '{"hook_event_name":"SessionEnd","session_id":"s1","cwd":"/tmp/proj"}')
+  is "SessionEnd maps to gone" "$(field "$out" state)" "gone"
+
+  # Claude fires Notification for two unrelated things; only the message
+  # distinguishes a real permission gate from the idle nudge.
+  out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"Claude needs your permission to use Bash"}')
+  is "Notification+permission maps to blocked" "$(field "$out" state)" "blocked"
+
+  out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"Claude is waiting for your input"}')
+  is "Notification+idle maps to finished, not blocked" "$(field "$out" state)" "finished"
+
+  # Codex has no Notification event.
+  out=$(hook_emit '{"hook_event_name":"PermissionRequest","session_id":"s1","cwd":"/p","agent_type":"codex"}')
+  is "PermissionRequest maps to blocked" "$(field "$out" state)" "blocked"
+
+  # Config spells events kebab-case, payloads spell them Pascal.
+  out=$(hook_emit '{"hook_event_name":"user-prompt-submit","session_id":"s1","cwd":"/p"}')
+  is "kebab-case event names accepted" "$(field "$out" state)" "working"
+
+  # REGRESSION: tab is IFS whitespace, so bash collapses runs of it and an
+  # empty field shifts every later field left by one. This shipped agent_type
+  # into message and left agent empty.
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p","agent_type":"codex"}')
+  is "empty message does not shift fields" "$(field "$out" agent)" "codex"
+  is "  and message stays empty" "$(field "$out" message)" ""
+
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s2","cwd":"/p","agent_type":"claude"}')
+  is "agent_type claude preserved" "$(field "$out" agent)" "claude"
+
+  # Payloads containing shell metacharacters must survive the transport.
+  out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"weird '\''quotes'\'' and $(rm -rf /) backticks"}')
+  has "hostile message survives base64 transport" "$(field "$out" message)" "backticks"
+
+  out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
+  is "unknown event emits nothing" "$out" ""
+
+  out=$(hook_emit 'not json at all')
+  is "malformed stdin emits nothing" "$out" ""
+
+  is "hook always exits 0" "$(echo 'garbage' | bash "$ROOT/bin/kettle-agent-hook" >/dev/null 2>&1; echo $?)" "0"
+}
+
+# ------------------------------------------------------------- install tests
+test_install() {
+  echo "install"
+  local T; T=$(mktemp -d)
+  export CLAUDE_CONFIG_DIR="$T/.claude" CODEX_HOME="$T/.codex"
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  # a pre-existing unrelated hook and setting must survive
+  cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'J'
+{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}
+J
+  "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  local d="$CLAUDE_CONFIG_DIR/settings.json"
+
+  is "unrelated setting preserved" \
+     "$(python3 -c "import json;print(json.load(open('$d'))['theme'])")" "auto"
+  is "foreign Stop hook preserved" \
+     "$(python3 -c "import json;d=json.load(open('$d'));print(sum(1 for e in d['hooks']['Stop'] for h in e['hooks'] if h['command']=='/usr/bin/true'))")" "1"
+  is "all five Claude events written" \
+     "$(python3 -c "import json;print(len(json.load(open('$d'))['hooks']))")" "5"
+  is "Codex uses PermissionRequest not Notification" \
+     "$(python3 -c "import json;print('PermissionRequest' in json.load(open('$CODEX_HOME/hooks.json'))['hooks'])")" "True"
+  is "hooks are async so they never block a prompt" \
+     "$(python3 -c "
+import json;d=json.load(open('$d'))
+print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']))")" "True"
+
+  local before; before=$(md5sum "$d" | cut -d' ' -f1)
+  "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "install is idempotent" "$(md5sum "$d" | cut -d' ' -f1)" "$before"
+
+  "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "remove leaves the foreign hook" \
+     "$(python3 -c "import json;d=json.load(open('$d'));print([h['command'] for e in d['hooks']['Stop'] for h in e['hooks']])")" \
+     "['/usr/bin/true']"
+  is "remove drops Kettle's own events" \
+     "$(python3 -c "import json;print(sorted(json.load(open('$d'))['hooks']))")" "['Stop']"
+
+  # A settings file that is not valid JSON must be refused, not clobbered.
+  printf '{ broken' > "$d"
+  "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "refuses to touch malformed JSON" "$(cat "$d")" "{ broken"
+
+  unset CLAUDE_CONFIG_DIR CODEX_HOME
+  rm -rf "$T"
+}
+
+# --------------------------------------------------------------- relay tests
+SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kettle/kettle.sock"
+
+relay_send() {
+  python3 -c "
+import socket,sys
+try:
+    s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(6); s.connect(sys.argv[1])
+    s.sendall(sys.argv[2].encode()+b'\n')
+    sys.stdout.write(s.recv(64).decode().strip())
+except Exception as e:
+    sys.stdout.write('ERR:'+str(e))
+" "$SOCK" "$1"
+}
+
+test_relay() {
+  echo "relay"
+  if [[ ! -S $SOCK ]]; then
+    skipt "relay protocol" "no socket at $SOCK — shell not running with the plugin"
+    return
+  fi
+  local TD="$HOME/.config/kettle/tokens" tok
+  mkdir -p "$TD"; chmod 700 "$TD"
+  tok=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
+  printf '%s' "$tok" > "$TD/kettle-test-host"; chmod 600 "$TD/kettle-test-host"
+
+  local b64; b64=$(python3 -c "
+import base64,json
+print(base64.b64encode(json.dumps({'agent':'claude','id':'testsuite1','state':'working','cwd':'/t','message':''}).encode()).decode())")
+
+  hasnt "valid token is accepted"   "$(relay_send "v1 $tok $b64")" "denied"
+  is    "wrong token denied"        "$(relay_send "v1 0000 $b64")" "denied"
+  is    "malformed line denied"     "$(relay_send "garbage")" "denied"
+  is    "wrong protocol version denied" "$(relay_send "v9 $tok $b64")" "denied"
+
+  # An unknown state must not create a pot.
+  local badstate; badstate=$(python3 -c "
+import base64,json
+print(base64.b64encode(json.dumps({'agent':'claude','id':'x','state':'nonsense','cwd':'/t'}).encode()).decode())")
+  is "invalid state denied" "$(relay_send "v1 $tok $badstate")" "denied"
+
+  # An id outside the charset must not create a pot.
+  local badid; badid=$(python3 -c "
+import base64,json
+print(base64.b64encode(json.dumps({'agent':'claude','id':'../../etc/passwd','state':'working','cwd':'/t'}).encode()).decode())")
+  is "path-like id denied" "$(relay_send "v1 $tok $badid")" "denied"
+
+  # Clean up the pot we just created.
+  local gone; gone=$(python3 -c "
+import base64,json
+print(base64.b64encode(json.dumps({'agent':'claude','id':'testsuite1','state':'gone','cwd':'/t'}).encode()).decode())")
+  relay_send "v1 $tok $gone" >/dev/null
+  rm -f "$TD/kettle-test-host"
+}
+
+# ----------------------------------------------------------------- structure
+test_structure() {
+  echo "structure"
+  is "manifest id is not the clone-convention form" \
+     "$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")" "kettle"
+  hasnt "no real name in manifest" "$(cat manifest.json)" "REDACTED"
+  hasnt "no home path baked into QML" "$(cat ./*.qml)" "/home/user"
+  for f in bin/*; do
+    [[ -x $f ]] && ok "executable: $f" || no "executable: $f" "not chmod +x"
+    bash -n "$f" 2>/dev/null && ok "parses: $f" || no "parses: $f" "syntax error"
+  done
+}
+
+groups=(${1:-structure hook install relay})
+for g in "${groups[@]}"; do "test_$g"; done
+
+echo
+printf 'passed %d, failed %d, skipped %d\n' "$pass" "$fail" "$skip"
+if ((fail)); then
+  printf '\nfailures:\n'; printf '  %s\n' "${FAILED[@]}"
+  exit 1
+fi
