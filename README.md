@@ -6,18 +6,10 @@ pot to land in the terminal it's running in.
 
 ![Kettle on the bar](docs/demo.png)
 
-Seven sessions above, from four sources: a herdr pane, hook-driven sessions,
-one posted by `kettle-emit`, and one arriving through the ssh relay. Each
-shows its agent's mark and the model read from that agent's catalog.
-
-Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
-including Pi — plus agents with hook systems running in plain terminal
-windows outside any multiplexer, and sessions on remote hosts over ssh.
-
-Six CLIs have hook systems Kettle installs into: **Claude Code**, **Codex**,
-**Qwen Code**, **Gemini CLI**, **Factory droid**, and **Grok Build**. Pi has
-none, so Pi is visible **through herdr only**; anything else can post its own
-events (see [Any other agent](#any-other-agent)).
+Sessions come from four sources: **herdr** (every agent it tracks, Pi
+included), hooks Kettle installs into **Claude Code, Codex, Qwen Code, Gemini
+CLI, Factory droid and Grok Build**, `kettle-emit` for
+[anything else](#any-other-agent), and remote hosts over ssh.
 
 ## Why
 
@@ -38,17 +30,14 @@ you right now*. Kettle surfaces exactly those.
 | `ready` | finished, and you haven't looked yet | no |
 | `murky` | agent present but unclassifiable | never shown on the bar |
 
-There is no reachable failure state. herdr reports only
-idle/working/blocked/done/unknown, and neither agent's hooks carry an exit
-status, so nothing can currently tell Kettle that a run *failed* as opposed to
-finished. Saying otherwise would be a promise the data cannot keep. A `burnt`
-state is reserved in the code for future shell-command pots — those do report
-exit codes — and where `burnt` appears below, that reservation is what is
-being described.
+There is no reachable failure state: neither herdr's statuses nor any hook
+carries an exit status, so nothing can tell Kettle a run *failed* rather than
+finished. A `burnt` state is reserved for future shell-command pots, which do
+report exit codes; mentions of `burnt` below describe that reservation.
 
-A finished pot never ticks. A running counter on something that already stopped
-reads as "still going", so terminal states show a coarse "just now / 5m ago"
-plus how long the run actually took.
+A finished pot never ticks — a running counter on stopped work reads as
+"still going" — so terminal states show a coarse "just now / 5m ago" plus how
+long the run took.
 
 ### Colours
 
@@ -66,26 +55,18 @@ omarchy plugin add https://github.com/zzwong/omarchy-kettle.git --enable
 ~/.config/omarchy/plugins/zzwong.kettle/bin/kettle-install
 ```
 
-`omarchy plugin add` clones the repo into
-`~/.config/omarchy/plugins/zzwong.kettle/`, validates the manifest, and
-enables the widget (it defaults to the right bar section). Updating later is
-`omarchy plugin update zzwong.kettle`, which shows a diff before
-fast-forwarding; removal is `omarchy plugin remove zzwong.kettle`.
+Update with `omarchy plugin update zzwong.kettle`; remove with
+`omarchy plugin remove zzwong.kettle`.
 
-The second line is deliberately separate: Omarchy's installer never executes
-plugin code, so anything that touches files outside the plugin directory has
-to be a step you run yourself. `kettle-install` merges hook entries into the
-config of every supported CLI it finds — Claude Code, Codex, Qwen Code,
-Gemini CLI, Factory droid, Grok Build — each in its own dialect (Qwen and
-Gemini count timeouts in milliseconds, droid nests nothing, Grok reads a
-directory so Kettle owns a whole file there), pointing at wherever the repo
-lives. It is idempotent, preserves your existing hooks and settings, and
-`--remove` reverses it cleanly — run it before `omarchy plugin remove`, which
-deletes the scripts the hooks point at. `--check` reports status without
-changing anything.
+The second line is separate because Omarchy's installer never executes plugin
+code. `kettle-install` merges hook entries into the config of every supported
+CLI it finds, in each one's own dialect. It is idempotent, preserves your
+existing hooks and settings, and `--remove` reverses it — run that before
+`omarchy plugin remove`, which deletes the scripts the hooks point at.
+`--check` reports status without changing anything.
 
-herdr needs no setup — Kettle polls it directly. Without `kettle-install` the
-herdr side works fully; only sessions outside herdr go unseen.
+herdr needs no setup, and works fully without `kettle-install`; only sessions
+outside herdr need the hooks.
 
 ## How each source works
 
@@ -93,49 +74,34 @@ herdr side works fully; only sessions outside herdr go unseen.
 server is running, and waking instantly when the socket reappears). One call
 returns every agent, so N sessions cost one process.
 
-A herdr pot is named by, in order: the name you gave it with
-`herdr agent rename`, the agent's own terminal title (Claude Code sets this to
-a live summary of what it is doing), then the bare agent name. All three ride
-the snapshot Kettle already fetches — naming costs nothing extra, locally or
-over the remote stream. herdr already distinguishes
-`idle` from `done`, where `done` means *finished while its tab was unseen* —
-which is precisely the state this widget exists to show. Clicking a herdr pot
-focuses its tab, which flips it to `idle`, which clears the pot on the next
-poll. The jump **is** the acknowledgement.
+A herdr pot is named by, in order: the name from `herdr agent rename`, the
+agent's own terminal title (Claude Code sets this to a live task summary),
+then the bare agent name. herdr's `done` means *finished while its tab was
+unseen* — precisely the state this widget exists to show. Clicking a herdr
+pot focuses its tab, which flips it to `idle` and clears the pot on the next
+poll: the jump is the acknowledgement.
 
-**Hook-driven agents** (Claude Code, Codex, Qwen Code, Gemini CLI, Factory
-droid, Grok Build) — the agent reports its own lifecycle through hooks.
+**Hook-driven agents** — the agent reports its own lifecycle through hooks.
 Nothing outside a terminal can observe what happens inside one: OSC escape
-sequences flow from the process to the terminal emulator and stop there, with no
-bus and no way for a third party to subscribe. The agent telling you directly is
-the only honest source of state.
-
-The six hook dialects differ in ways that matter. Gemini names the
-prompt/turn events `BeforeAgent`/`AfterAgent`. Qwen and droid include a
-`notification_type` field, which the hook prefers over guessing from message
-text. Grok sends camelCase keys, does not document its Notification payload —
-so that event is left unwired and a permission wait shows as `simmering`
-rather than a wrong `ready` — and is recognised by its `GROK_*` environment
-variables, because `CLAUDE_PROJECT_DIR` is set by several of these tools as a
-compatibility alias and identifies none of them.
+sequences flow from the process to the terminal emulator and stop there. The
+agent telling you directly is the only honest source of state. The hook
+speaks each CLI's dialect (event names, payload casing, timeout units all
+differ); one visible consequence: Grok's notification payload is
+undocumented, so a Grok permission wait shows as `simmering` rather than a
+wrong `ready`.
 
 ## Any other agent
 
 Two paths, neither of which requires changing Kettle.
 
-**Inside herdr, it already works.** herdr detects some twenty agent TUIs —
-opencode, gemini, amp, grok, hermes, cursor, and more — and Kettle renders
-whatever herdr reports. Most known agents get a hand-drawn identity mark
-(simplified line reductions of each brand, legible at 14 px); anything else
-gets its initial in a ring — identifiable, never a wrong logo.
+**Inside herdr, it already works.** herdr detects some twenty agent TUIs and
+Kettle renders whatever it reports: a hand-drawn identity mark for most known
+agents, an initial in a ring for the rest — never a wrong logo.
 
-**Outside herdr, the ingestion is a public contract.** Kettle ships hooks
-for the six CLIs that have hook systems to install into; anything else —
-opencode and Amp (JS plugin systems rather than event→command config), goose
-(no lifecycle hooks at all), Cursor CLI (hooks documented but currently not
-fired by `cursor-agent`) — integrates by posting its own lifecycle events
-with `bin/kettle-emit` from whatever extension point the tool offers (a
-plugin, a wrapper, a shell alias):
+**Outside herdr, post events with `bin/kettle-emit`** from whatever extension
+point the tool offers — a plugin, a wrapper, a shell alias. This covers tools
+with plugin systems instead of hook configs (opencode, Amp), no hooks at all
+(goose), or hooks that don't currently fire (Cursor CLI):
 
 ```bash
 kettle-emit --agent opencode --id "$SESSION" --state working  --cwd "$PWD"
@@ -145,12 +111,10 @@ kettle-emit --agent opencode --id "$SESSION" --state gone
 ```
 
 States are `register | working | blocked | finished | gone`. `--window`
-takes a Hyprland window address and becomes the pot's jump target; without
-it the pot is informational. On a host set up by `kettle-remote install`,
-the same command posts through the ssh relay instead — the script detects
-which side it is on. Model slugs are resolved against the agent catalogs
-described under [Model](#model), so `--model deepseek-v4-flash` renders as
-its proper display name.
+takes a Hyprland window address as the pot's jump target; without it the pot
+is informational. On a host set up by `kettle-remote install`, the same
+command posts through the ssh relay instead. `--model` slugs resolve to
+display names as described under [Model](#model).
 
 ## Jumping to a window
 
@@ -187,35 +151,23 @@ unset.
 
 Each pot names the model beside the agent — `Claude Code · Opus 5`.
 
-Where it comes from differs by agent, because the hook systems disagree:
-Codex and Qwen Code put `model` in the hook payload; Claude Code does not, so
-the hook seeks the last 256 KB of the session transcript (these files reach
-megabytes) and reads the newest assistant message. Gemini, droid and Grok
-carry no model in payload or readable transcript, so their pots go without —
-no number is better than a guessed one.
+Codex and Qwen Code put `model` in the hook payload. Claude Code does not, so
+the hook reads the newest assistant message from the last 256 KB of the
+session transcript. Gemini, droid and Grok expose it nowhere, so their pots
+go without.
 
-Display names are resolved the way pi resolves models: agents already
-maintain model catalogs on disk — Codex refreshes `~/.codex/models_cache.json`,
-pi caches `~/.pi/agent/models-store.json` — so slugs are looked up there,
-preferring the emitting agent's own catalog when they disagree about the same
-slug. The catalogs are watched files, so a newly released model gets its
-proper name the moment the agent itself learns it exists, with no process
-spawned and nothing hardcoded. A capitalisation heuristic covers slugs no
-catalog knows. Remote sessions carry the
-string over the relay, where it is length-capped and character-stripped —
-it is self-reported and cosmetic, unlike host and window, which the relay
-always derives itself.
+Slugs become display names via the model catalogs agents already maintain on
+disk (Codex's `models_cache.json`, pi's `models-store.json`), preferring the
+emitting agent's own catalog when they disagree. The catalogs are watched
+files, so a new model names itself correctly the moment its agent learns it
+exists; a capitalisation heuristic covers the rest.
 
-There is deliberately **no context-usage readout**. The transcript exposes no
-context-window field, and the nearest candidate — `cache_read_input_tokens` —
-is not a stand-in: on a long session it reads several times the window size,
-because after compaction it counts cached prefix reads rather than live
-context. A number that looks authoritative and is wrong is worse than no
-number.
+There is no **context-usage readout**: the transcript exposes no
+context-window field, and the nearest candidate (`cache_read_input_tokens`)
+exceeds the window size after compaction. A number that looks authoritative
+and is wrong is worse than no number.
 
 ## Keyboard
-
-The panel is fully keyboard driven.
 
 | Key | Action |
 |---|---|
@@ -256,12 +208,10 @@ Host <host>
     ControlPersist 10m
 ```
 
-`kettle-remote install` prints this block with your real socket path filled
-in — copy it from there rather than from this README.
-
-`ControlMaster` earns its place twice: jumping to a remote pane reuses the
-connection you already have (~48ms rather than ~100ms), and it keeps the
-reverse forward alive when the session that created it exits.
+(`install` prints this block with your real socket path — copy it from
+there.) `ControlMaster` makes remote jumps reuse your existing connection
+(~48ms rather than ~100ms) and keeps the reverse forward alive after the
+session that created it exits.
 
 ### How it works, and what it costs
 
@@ -332,7 +282,7 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
 
 - Omarchy 4 ("Quattro") or newer — the Quickshell plugin architecture
 - Hyprland
-- Optional: [herdr](https://herdr.dev), Claude Code, Codex
+- Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
 
 ## Known limitations
 
@@ -344,13 +294,12 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
   short of hooking every tool call.
 - **Hook pots do not survive a shell reload.** They live in memory; herdr pots
   repopulate from the next poll, agent pots reappear on their next event.
-- **herdr pots show a model only for pi.** `herdr api snapshot` exposes
-  neither a model field nor a transcript path. pi escapes this because it keys
-  its session logs by working directory, which the snapshot does carry — so a
-  local pi pot's model is tail-read from its newest session file, one short
-  process per state change. Claude Code and Codex pots stay model-less inside
-  herdr: Codex keys sessions by date, and a Claude cwd can host several
-  concurrent sessions, so the same trick would sometimes name the wrong one.
+- **herdr pots show a model only for pi.** The snapshot exposes no model or
+  transcript path. pi keys its session logs by working directory — which the
+  snapshot does carry — so a local pi pot's model is tail-read from its
+  newest session file. Codex keys sessions by date and a Claude cwd can host
+  several concurrent sessions, so the same trick would sometimes name the
+  wrong one.
 - **herdr run durations are accurate to the 2s poll.** Hook-sourced pots are
   exact, so the same work can be reported a second apart by the two sources.
 
