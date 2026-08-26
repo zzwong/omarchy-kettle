@@ -13,7 +13,10 @@ import qs.Ui
 Panel {
   id: root
 
-  moduleName: "kettle"
+  // The registry's canonical widget id — must match the manifest id. The IPC
+  // target below stays the short "kettle" on purpose: it is typed by hand in
+  // keybindings, and the develop guide mandates the id match only here.
+  moduleName: "zzwong.kettle"
   ipcTarget: "kettle"
   manageIpc: false   // this panel owns the single IpcHandler for its target
 
