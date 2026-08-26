@@ -112,7 +112,9 @@ QtObject {
         source: "herdr",
         runStart: runStart,
         ranMs: ranMs,
-        label: String(ag.terminal_title_stripped || ag.agent || "agent"),
+        // A `herdr agent rename` name is the user's own word for the pane, so
+        // it outranks the agent's self-set terminal title.
+        label: String(ag.name || ag.terminal_title_stripped || ag.agent || "agent"),
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
@@ -160,7 +162,10 @@ QtObject {
       var pot = {
         key: key,
         source: "rherdr",
-        label: agentLabel(ag.agent),
+        // Same hierarchy as local herdr pots: user-set name, then the agent's
+        // live title, then the generic agent label. Both remote fields arrive
+        // length-capped by the poller — cosmetic, remote-controlled input.
+        label: String(ag.name || ag.terminal_title_stripped || "") || agentLabel(ag.agent),
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,

@@ -134,6 +134,7 @@ QtObject {
         agent_status: String(a.state || "").slice(0, 16),
         cwd: String(a.cwd || "").slice(0, 512),
         terminal_title_stripped: String(a.title || "").slice(0, 120),
+        name: String(a.name || "").slice(0, 64),
         state_change_seq: Number(a.seq)
       })
     }

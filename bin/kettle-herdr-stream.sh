@@ -64,6 +64,7 @@ for a in snap.get("agents") or []:
         "state":  a.get("agent_status") or "",
         "cwd":    a.get("cwd") or "",
         "title":  a.get("terminal_title_stripped") or "",
+        "name":   a.get("name") or "",
         "seq":    a.get("state_change_seq"),
     })
 agents.sort(key=lambda x: x["id"])

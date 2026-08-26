@@ -69,7 +69,13 @@ herdr needs no setup — Kettle polls it directly.
 
 **herdr** — polled via `herdr api snapshot` every 2s (backing off to 15s when no
 server is running, and waking instantly when the socket reappears). One call
-returns every agent, so N sessions cost one process. herdr already distinguishes
+returns every agent, so N sessions cost one process.
+
+A herdr pot is named by, in order: the name you gave it with
+`herdr agent rename`, the agent's own terminal title (Claude Code sets this to
+a live summary of what it is doing), then the bare agent name. All three ride
+the snapshot Kettle already fetches — naming costs nothing extra, locally or
+over the remote stream. herdr already distinguishes
 `idle` from `done`, where `done` means *finished while its tab was unseen* —
 which is precisely the state this widget exists to show. Clicking a herdr pot
 focuses its tab, which flips it to `idle`, which clears the pot on the next
