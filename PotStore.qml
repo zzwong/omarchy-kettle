@@ -327,11 +327,18 @@ QtObject {
   // rather than being forced into a guess.
   function agentLabel(kind) {
     switch (String(kind || "")) {
-      case "claude": return "Claude Code"
-      case "codex":  return "Codex"
-      case "pi":     return "Pi"
-      case "":       return "agent"
-      default:       return String(kind).charAt(0).toUpperCase() + String(kind).slice(1)
+      case "claude":     return "Claude Code"
+      case "codex":      return "Codex"
+      case "pi":         return "Pi"
+      // Brands whose casing is not plain capitalisation.
+      case "opencode":   return "opencode"
+      case "maki":       return "maki"
+      case "agy":        return "Antigravity"
+      case "omp":        return "oh-my-pi"
+      case "mastracode": return "Mastra Code"
+      case "qodercli":   return "Qoder"
+      case "":           return "agent"
+      default:           return String(kind).charAt(0).toUpperCase() + String(kind).slice(1)
     }
   }
 

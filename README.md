@@ -112,8 +112,9 @@ Two paths, neither of which requires changing Kettle.
 
 **Inside herdr, it already works.** herdr detects some twenty agent TUIs —
 opencode, gemini, amp, grok, hermes, cursor, and more — and Kettle renders
-whatever herdr reports: unknown agents get a neutral mark and a capitalized
-label rather than a wrong logo.
+whatever herdr reports. Most known agents get a hand-drawn identity mark
+(simplified line reductions of each brand, legible at 14 px); anything else
+gets its initial in a ring — identifiable, never a wrong logo.
 
 **Outside herdr, the ingestion is a public contract.** Kettle ships hooks
 only for Claude Code and Codex because only they have hook systems to
