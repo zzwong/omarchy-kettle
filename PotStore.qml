@@ -280,7 +280,7 @@ QtObject {
     }
   }
 
-  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5-codex" -> "GPT-5 Codex".
+  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5.6-sol" -> "GPT-5.6 Sol".
   // Version fragments join with a dot; everything else is a word.
   function prettyModel(m) {
     var raw = String(m || "")

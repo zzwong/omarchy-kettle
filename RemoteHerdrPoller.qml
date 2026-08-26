@@ -211,7 +211,7 @@ QtObject {
   // Cheap local probe: is the user still connected to this host?
   property Process check: Process {
     command: ["ssh", "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
-              "-O", "check", root.host]
+              "-O", "check", "--", root.host]
     onExited: function(code) {
       var alive = (code === 0)
       if (alive !== root.masterAlive) {

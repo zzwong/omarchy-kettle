@@ -42,6 +42,11 @@ print("\x1f".join([g("hook_event_name"), g("session_id"), g("cwd"), g("message")
 
 [[ -z ${event:-} || -z ${sid:-} ]] && exit 0
 
+# The session id becomes a filename in STATE_DIR and a title nonce. The relay
+# validates this charset on its side; the local paths get the same guard, so a
+# hostile payload cannot write outside the state dir or smuggle quoting.
+[[ $sid =~ ^[A-Za-z0-9._-]{1,64}$ ]] || exit 0
+
 # herdr already reports this session with a richer lifecycle than hooks can
 # give us, so a herdr-managed pane must not produce a second pot.
 [[ -n ${HERDR_PANE_ID:-} || ${HERDR_ENV:-} == 1 ]] && exit 0
@@ -131,9 +136,9 @@ import json,sys
 try: cs=json.load(sys.stdin)
 except Exception: sys.exit(0)
 for c in cs:
-    if c.get('title')=='$nonce':
+    if c.get('title')==sys.argv[1]:
         print(c['address']); break
-" 2>/dev/null)
+" "$nonce" 2>/dev/null)
     [[ -n $addr ]] && break
     sleep 0.05
   done
@@ -256,9 +261,12 @@ if (( REMOTE )); then
   # The relay replies `ok` once it has resolved this session's window from the
   # nonce; after that we stop repainting the title. `need-nonce` means the
   # window went away (a reattached multiplexer, say) and we must announce again.
-  ( python3 -c '
+  # The token rides an environment variable, not argv: /proc/*/cmdline is
+  # world-readable for the process's lifetime, /proc/*/environ is not.
+  ( KETTLE_RELAY_TOKEN="$relay_token" python3 -c '
 import socket, sys, os
-port, token, b64, marker = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+port, b64, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+token = os.environ.get("KETTLE_RELAY_TOKEN", "")
 try:
     s = socket.create_connection(("127.0.0.1", int(port)), 1)
     s.settimeout(2)
@@ -273,7 +281,7 @@ if ack == "ok":
 elif ack == "need-nonce":
     try: os.unlink(marker)
     except Exception: pass
-' "$relay_port" "$relay_token" "$b64" "$resolved_marker" >/dev/null 2>&1 & ) &
+' "$relay_port" "$b64" "$resolved_marker" >/dev/null 2>&1 & ) &
   exit 0
 fi
 

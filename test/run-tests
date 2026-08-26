@@ -210,8 +210,10 @@ test_structure() {
   echo "structure"
   is "manifest id is the namespaced author.name form" \
      "$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")" "zzwong.kettle"
-  hasnt "no real name in manifest" "$(cat manifest.json)" "REDACTED"
-  hasnt "no home path baked into QML" "$(cat ./*.qml)" "/home/user"
+  # Derived at runtime so the guard never has to embed the very strings it
+  # exists to keep out of the repo.
+  hasnt "no local username in manifest" "$(cat manifest.json)" "${USER^}"
+  hasnt "no home path baked into QML" "$(cat ./*.qml)" "$HOME"
   # Check each file with the interpreter its shebang actually names — bin/
   # holds both bash and python now.
   for f in bin/* ; do

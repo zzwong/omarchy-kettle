@@ -32,10 +32,13 @@ you right now*. Kettle surfaces exactly those.
 | `ready` | finished, and you haven't looked yet | no |
 | `murky` | agent present but unclassifiable | never shown on the bar |
 
-There is no failure state. herdr reports only idle/working/blocked/done/unknown,
-and neither agent's hooks carry an exit status, so nothing can currently tell
-Kettle that a run *failed* as opposed to finished. Saying otherwise would be a
-promise the data cannot keep.
+There is no reachable failure state. herdr reports only
+idle/working/blocked/done/unknown, and neither agent's hooks carry an exit
+status, so nothing can currently tell Kettle that a run *failed* as opposed to
+finished. Saying otherwise would be a promise the data cannot keep. A `burnt`
+state is reserved in the code for future shell-command pots — those do report
+exit codes — and where `burnt` appears below, that reservation is what is
+being described.
 
 A finished pot never ticks. A running counter on something that already stopped
 reads as "still going", so terminal states show a coarse "just now / 5m ago"
@@ -226,6 +229,8 @@ That is irreducible, because the hook runs as that user.
   displaying it.
 - **An agent running detached on the remote** (inside remote tmux, or on
   someone else's display) gets an informational pot with no jump target.
+- **Remotes must be Linux.** The pushed hook needs bash ≥ 4 and reads
+  `/proc`, so a macOS remote's `/bin/bash` 3.2 would fail silently.
 
 ## Settings
 
@@ -252,7 +257,8 @@ escalation, the bar is the truth.
 
 ```bash
 ./test/run-tests           # everything
-./test/run-tests hook      # one group: structure | hook | install | relay
+./test/run-tests hook      # one group: structure | coherence | hook |
+                           #   install | guard | stream | relay
 ```
 
 No framework, no dependencies beyond bash and python3. The relay group needs a

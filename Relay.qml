@@ -283,7 +283,9 @@ QtObject {
           // anything that is not a plausible host or ssh alias rather than
           // trusting whatever happens to be in the directory.
           var h = p[0]
-          if (!/^[A-Za-z0-9._-]{1,253}$/.test(h)) { root.rejected("bad host name: " + h); continue }
+          // First character must be alphanumeric: a name starting with "-"
+          // would later be parsed as an option by anything that forgets "--".
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(h)) { root.rejected("bad host name: " + h); continue }
 
           // herdrPath is probed FROM the remote, so it is remote-controlled.
           // Absolute path, conservative charset, or it is not used at all.

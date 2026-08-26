@@ -69,12 +69,15 @@ cmd_install() {
   fi
 
   echo "Installing on $host…"
-  # The hook travels base64-encoded inside the script rather than on a second
-  # stdin: a remote `bash -s` only has one, and the script is already using it.
+  # Everything — port, token, hook — travels on the script's stdin, never on
+  # the command line: sshd exposes the remote command in /proc/*/cmdline for
+  # its lifetime, so an argv token would be readable by every user on a shared
+  # host. `%q` keeps the values inert when the remote shell re-reads them.
   local hook_b64; hook_b64=$(base64 -w0 < "$HOOK")
-  ssh -o BatchMode=yes "$host" 'bash -s' -- "$port" "$token" "$hook_b64" <<'REMOTE' 2>&1 | sed 's/^/  /'
+  {
+    printf 'PORT=%q; TOKEN=%q; HOOK_B64=%q\n' "$port" "$token" "$hook_b64"
+    cat <<'REMOTE'
 set -uo pipefail
-PORT=$1; TOKEN=$2; HOOK_B64=$3
 mkdir -p ~/.local/bin ~/.config/kettle ~/.local/state/kettle/sessions
 chmod 700 ~/.config/kettle
 cat > ~/.config/kettle/relay.conf <<EOF
@@ -82,9 +85,13 @@ port=$PORT
 token=$TOKEN
 EOF
 chmod 600 ~/.config/kettle/relay.conf
-printf '%s' "$HOOK_B64" | base64 -d > /tmp/kettle-hook-in \
-  && install -m 755 /tmp/kettle-hook-in ~/.local/bin/kettle-agent-hook \
-  && rm -f /tmp/kettle-hook-in
+# mktemp, not a fixed /tmp name: a fixed path on a shared host is a symlink
+# plant / substitution race that ends with someone else's code in every
+# agent session.
+hook_tmp=$(mktemp) \
+  && printf '%s' "$HOOK_B64" | base64 -d > "$hook_tmp" \
+  && install -m 755 "$hook_tmp" ~/.local/bin/kettle-agent-hook \
+  && rm -f "$hook_tmp"
 python3 - <<'PY'
 import json, os
 hook = os.path.expanduser("~/.local/bin/kettle-agent-hook")
@@ -124,6 +131,7 @@ for path, events in targets:
 PY
 echo "  hook at ~/.local/bin/kettle-agent-hook"
 REMOTE
+  } | ssh -o BatchMode=yes "$host" 'bash -s' 2>&1 | sed 's/^/  /'
 
   cat <<EOF
 
@@ -160,12 +168,15 @@ print(base64.b64encode(json.dumps({
 }).encode()).decode())')
 
   echo "Sending a test event from $host…"
+  # Token over stdin, not inside the remote command line — same reasoning as
+  # the installer.
   local ack
-  ack=$(ssh -o BatchMode=yes -R "127.0.0.1:$port:$SOCK" "$host" \
+  ack=$(printf 'v1 %s %s\n' "$token" "$b64" | \
+    ssh -o BatchMode=yes -R "127.0.0.1:$port:$SOCK" "$host" \
     "python3 -c \"
-import socket
+import socket,sys
 s=socket.create_connection(('127.0.0.1',$port),3); s.settimeout(4)
-s.sendall(b'v1 $token $b64\\n')
+s.sendall(sys.stdin.readline().encode())
 print(s.recv(64).decode().strip())
 \"" 2>&1 | tail -1)
 
