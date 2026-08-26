@@ -136,7 +136,11 @@ test_install() {
   # can never touch the real machine from inside a test run.
   local RH="$HOME"
   export CLAUDE_CONFIG_DIR="$T/.claude" CODEX_HOME="$T/.codex" HOME="$T"
-  mkdir -p "$CLAUDE_CONFIG_DIR"
+  mkdir -p "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
+  # An empty config marks the tool "present" without relying on its binary
+  # being installed on the machine running the suite — CI caught this: the
+  # codex assertions only passed where codex happened to be on PATH.
+  echo '{}' > "$CODEX_HOME/hooks.json"
   # a pre-existing unrelated hook and setting must survive
   cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'J'
 {"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}
