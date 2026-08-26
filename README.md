@@ -223,6 +223,7 @@ Agent sessions on another machine appear on your bar, tagged with the host.
 bin/kettle-remote install <host>
 bin/kettle-remote test <host>
 bin/kettle-remote status <host>
+bin/kettle-remote uninstall <host>   # removes the hook and token; reverses install
 ```
 
 Install mints a per-host token, pushes the hook, wires the remote agent
