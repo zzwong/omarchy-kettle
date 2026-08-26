@@ -51,6 +51,13 @@ QtObject {
 
   signal potChanged(var pot, string fromState)
 
+  // NOTE ON `burnt`: no current source can produce it. herdr reports only
+  // idle/working/blocked/done/unknown, and neither Claude Code nor Codex hooks
+  // carry an exit status. It is reserved for shell-command pots, which report
+  // exit codes and are not built yet. The rendering paths are kept because
+  // they are correct and small — but nothing reaches them today, and the
+  // README does not claim otherwise.
+  //
   // herdr agent_status -> pot state. `idle` produces no pot at all: the agent
   // is ready for input and has already been seen, so there is nothing to say.
   // `unknown` is documented as NOT proving completion, so it can never become
@@ -93,7 +100,11 @@ QtObject {
       var runStart = (was && was.runStart) ? was.runStart : now
       if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
       var ranMs = (was && was.ranMs) ? was.ranMs : 0
-      if ((state === "ready" || state === "burnt") && was && was.state === "simmering")
+      // Measure from runStart regardless of the immediately preceding state: a
+      // session that finishes from `needs-attention` (approved, then done) ran
+      // just as long as one finishing from `simmering`, and reporting nothing
+      // for it was an accident of the transition check.
+      if ((state === "ready" || state === "burnt") && was && was.runStart)
         ranMs = now - was.runStart
 
       var pot = {
@@ -143,7 +154,7 @@ QtObject {
       var runStart = (was && was.runStart) ? was.runStart : now
       if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
       var ranMs = (was && was.ranMs) ? was.ranMs : 0
-      if ((state === "ready" || state === "burnt") && was && was.state === "simmering")
+      if ((state === "ready" || state === "burnt") && was && was.runStart)
         ranMs = now - was.runStart
 
       var pot = {
@@ -224,7 +235,7 @@ QtObject {
     var runStart = (was && was.runStart) ? was.runStart : now
     if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
     var ranMs = (was && was.ranMs) ? was.ranMs : 0
-    if (state === "ready" && was && was.state === "simmering")
+    if (state === "ready" && was && was.runStart)
       ranMs = now - was.runStart
 
     var pot = {
@@ -238,7 +249,7 @@ QtObject {
       since: (was && was.state === state) ? was.since : now,
       seq: -1,
       paneId: "",
-      windowAddr: String(ev.window || ""),
+      windowAddr: canonAddr(ev.window),
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       // Read from the session transcript by the hook: the payload itself
@@ -305,7 +316,7 @@ QtObject {
     var changed = false
     for (var k in map) {
       var pot = map[k]
-      if (!pot || pot.windowAddr !== addr) continue
+      if (!pot || canonAddr(pot.windowAddr) !== canonAddr(addr)) continue
       if (pot.state === "ready" || pot.state === "burnt") {
         delete map[k]
         changed = true
@@ -324,6 +335,16 @@ QtObject {
   // independent of it and must survive a herdr server restart.
   function clear() {
     if (herdrPots.length > 0) herdrPots = []
+  }
+
+  // Hyprland addresses arrive from three places — hyprctl (always 0x-prefixed),
+  // Quickshell's toplevel model, and our own relay — and they were compared as
+  // raw strings. One unprefixed source would silently break focus-clearing,
+  // so every address is canonicalised here and nowhere else.
+  function canonAddr(a) {
+    var s = String(a || "").trim().toLowerCase()
+    if (s.length === 0) return ""
+    return s.indexOf("0x") === 0 ? s : "0x" + s
   }
 
   function basename(p) {

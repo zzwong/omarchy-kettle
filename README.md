@@ -4,9 +4,12 @@ Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes, fails, or needs you. Click a
 pot to land in the terminal it's running in.
 
-Kettle knows about **herdr** sessions, **Claude Code**, **Codex** and **Pi** —
-including sessions in plain terminal windows outside any multiplexer, and
-sessions running on remote hosts over ssh.
+Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
+including Pi — plus **Claude Code** and **Codex** running in plain terminal
+windows outside any multiplexer, and sessions on remote hosts over ssh.
+
+Only Claude Code and Codex have hook systems Kettle can install into. Pi has
+none, so Pi is visible **through herdr only**.
 
 ![The Kettle panel](docs/panel.png)
 
@@ -27,8 +30,12 @@ you right now*. Kettle surfaces exactly those.
 | `simmering` | work in progress | yes — the tick is the signal |
 | `needs-attention` | blocked on an approval or question | yes — it's measuring **your** latency |
 | `ready` | finished, and you haven't looked yet | no |
-| `burnt` | failed | no |
 | `murky` | agent present but unclassifiable | never shown on the bar |
+
+There is no failure state. herdr reports only idle/working/blocked/done/unknown,
+and neither agent's hooks carry an exit status, so nothing can currently tell
+Kettle that a run *failed* as opposed to finished. Saying otherwise would be a
+promise the data cannot keep.
 
 A finished pot never ticks. A running counter on something that already stopped
 reads as "still going", so terminal states show a coarse "just now / 5m ago"
@@ -160,11 +167,14 @@ prints an ssh block to add:
 
 ```
 Host <host>
-    RemoteForward 127.0.0.1:47761 /run/user/1000/kettle/kettle.sock
+    RemoteForward 127.0.0.1:47761 /run/user/UID/kettle/kettle.sock
     ControlMaster auto
     ControlPath ~/.ssh/cm-%r@%h:%p
     ControlPersist 10m
 ```
+
+`kettle-remote install` prints this block with your real socket path filled
+in — copy it from there rather than from this README.
 
 `ControlMaster` earns its place twice: jumping to a remote pane reuses the
 connection you already have (~48ms rather than ~100ms), and it keeps the

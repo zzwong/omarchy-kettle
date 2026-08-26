@@ -16,6 +16,8 @@ QtObject {
   // paneId of the currently focused herdr pane, so we can stay silent about
   // something the user is demonstrably looking at.
   property string focusedPaneId: ""
+  // Hook and remote pots carry a window address instead of a pane id.
+  property string focusedWindow: ""
 
   property var lastFired: ({})       // key+state -> timestamp
   property var pending: []
@@ -42,8 +44,10 @@ QtObject {
     // startup — only genuine transitions during this session.
     if (fromState === "") return
 
-    // You are looking straight at it.
+    // You are looking straight at it — by pane (herdr) or by window (hook,
+    // remote). Checking only the pane silently exempted every non-herdr pot.
     if (pot.paneId && pot.paneId === focusedPaneId) return
+    if (pot.windowAddr && focusedWindow && pot.windowAddr === focusedWindow) return
 
     var stamp = pot.key + ":" + s
     var now = Date.now()

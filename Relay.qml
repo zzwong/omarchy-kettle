@@ -21,7 +21,10 @@ QtObject {
   id: root
 
   property QtObject store: null
-  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ("/run/user/1000")
+  // No uid fallback: guessing /run/user/1000 would put the socket somewhere
+  // wrong on any machine where the uid differs, and a silently misplaced
+  // socket is worse than an obvious failure.
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
   readonly property string sockPath: runtimeDir + "/kettle/kettle.sock"
   readonly property string tokenDir: Quickshell.env("HOME") + "/.config/kettle/tokens"
   readonly property string hostDir: Quickshell.env("HOME") + "/.config/kettle/hosts"
@@ -111,7 +114,10 @@ QtObject {
     if (!list) return ""
     for (var i = 0; i < list.values.length; i++) {
       var tl = list.values[i]
-      if (tl && String(tl.title) === title) return String(tl.address)
+      if (tl && String(tl.title) === title) {
+        var a = String(tl.address)
+        return a.indexOf("0x") === 0 ? a : "0x" + a
+      }
     }
     return ""
   }
@@ -120,13 +126,18 @@ QtObject {
     var list = Hyprland.toplevels
     if (!list || !addr) return false
     for (var i = 0; i < list.values.length; i++)
-      if (list.values[i] && String(list.values[i].address) === addr) return true
+      if (list.values[i]) {
+        var v = String(list.values[i].address)
+        if ((v.indexOf("0x") === 0 ? v : "0x" + v) === addr) return true
+      }
     return false
   }
 
   function activeAddress() {
     var tl = Hyprland.activeToplevel
-    return tl ? String(tl.address) : ""
+    if (!tl) return ""
+    var a = String(tl.address)
+    return a.indexOf("0x") === 0 ? a : "0x" + a
   }
 
   // ---- ingestion ----------------------------------------------------------
@@ -267,8 +278,23 @@ QtObject {
         for (var i = 0; i < lines.length; i++) {
           var p = lines[i].split("\t")
           if (p.length < 2 || p[1].length === 0) continue
-          map[p[1]] = p[0]
-          info[p[0]] = { herdr: (p.length > 2 ? p[2] : "") }
+
+          // A token filename becomes an ssh target and an origin label. Reject
+          // anything that is not a plausible host or ssh alias rather than
+          // trusting whatever happens to be in the directory.
+          var h = p[0]
+          if (!/^[A-Za-z0-9._-]{1,253}$/.test(h)) { root.rejected("bad host name: " + h); continue }
+
+          // herdrPath is probed FROM the remote, so it is remote-controlled.
+          // Absolute path, conservative charset, or it is not used at all.
+          var hp = (p.length > 2 ? p[2] : "")
+          if (hp.length > 0 && !/^\/[A-Za-z0-9._\/-]{1,255}$/.test(hp)) {
+            root.rejected("refusing suspicious herdr path from " + h)
+            hp = ""
+          }
+
+          map[p[1]] = h
+          info[h] = { herdr: hp }
         }
         root.hostInfo = info
         // Only reassign when the set actually differs. `tokens` is reloaded
@@ -296,7 +322,7 @@ QtObject {
   // mode is umask-dependent and unix connect needs write permission, so the
   // directory is what actually enforces same-uid-only access.
   property Process dirMaker: Process {
-    running: true
+    running: root.runtimeDir.length > 0
     command: ["bash", "-c", 'mkdir -p "$(dirname "' + root.sockPath + '")" && chmod 700 "$(dirname "' + root.sockPath + '")"']
     onExited: server.active = true
   }

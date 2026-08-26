@@ -105,7 +105,10 @@ Panel {
         // Absolute path, resolved at install: a non-interactive ssh gets no
         // login shell, so a bare `herdr` fails with "command not found" —
         // silently, because execDetached discards output.
-        pot.host, (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
+        // paneId is regex-validated on ingest and herdrPath on load, so this
+        // interpolation is safe — but it runs on the remote, not here.
+        "--", pot.host,
+        (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
       ])
       return
     }
@@ -144,7 +147,7 @@ Panel {
     target: Hyprland
     function onActiveToplevelChanged() {
       var tl = Hyprland.activeToplevel
-      if (tl && tl.address) store.seenWindow("0x" + String(tl.address).replace(/^0x/, ""))
+      if (tl && tl.address) store.seenWindow(store.canonAddr(tl.address))
     }
   }
 
@@ -171,6 +174,8 @@ Panel {
       // property-change signal QML generates, so the handler never fired.
       onSnapshotAgents: function(list) { store.reconcileRemote(host, list) }
       onDown: store.dropRemoteHost(host)
+      // Unreachable long enough that its pots cannot be trusted.
+      onLost: store.dropRemoteHost(host)
     }
   }
 
@@ -185,6 +190,10 @@ Panel {
     id: notifier
     enabled: root.notify
     focusedPaneId: poller.focusedPaneId
+    // Hook and remote pots have no paneId, so paneId-based suppression could
+    // never match them and a blocked pot would notify even while you watched
+    // its window. Window address covers those.
+    focusedWindow: store.canonAddr(Hyprland.activeToplevel ? Hyprland.activeToplevel.address : "")
     glyphAttention: root.glyphAttention
     glyphReady: root.glyphReady
     glyphBurnt: root.glyphBurnt
@@ -238,7 +247,12 @@ Panel {
 
     // Entry point for agents outside herdr. The payload is base64 so that a
     // command line, a prompt, or a cwd containing quotes cannot break the
-    // transport. Phase 2's shell hook will use this same method.
+    // transport.
+    //
+    // Unlike the relay, this does NOT sanitize: reaching this IPC already
+    // requires running as the same user, who could call store.ingest by other
+    // means anyway. Do not assume ingest() validates — remote input goes
+    // through Relay.sanitize() precisely because this path does not.
     function agentEvent(b64: string): string {
       try {
         var ev = JSON.parse(Qt.atob(b64))

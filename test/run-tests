@@ -309,7 +309,82 @@ STUB
   rm -rf "$T"
 }
 
-groups=(${1:-structure hook install guard stream relay})
+# ------------------------------------------------------------ coherence tests
+# The suite was green while two user-visible defects sat in the QML layer: a
+# documented state nothing could produce, and pots that outlived their host.
+# These check claims against code rather than exercising behaviour — cheap, and
+# they catch exactly the class of drift that embarrasses a published project.
+test_coherence() {
+  echo "coherence"
+
+  # Every state the UI can RENDER should be one some source can PRODUCE,
+  # or be explicitly acknowledged as unreachable.
+  local produced rendered
+  produced=$(grep -oE 'return "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qml \
+             | sed 's/.*"\(.*\)"/\1/' | sort -u)
+  produced="$produced
+$(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qml \
+             | sed 's/.*"\(.*\)"/\1/' | sort -u)"
+  rendered=$(grep -oE 'case "(simmering|needs-attention|ready|burnt|murky)"' Panel.qml \
+             | sed 's/.*"\(.*\)"/\1/' | sort -u)
+
+  local orphan=""
+  for r in $rendered; do
+    printf '%s\n' "$produced" | grep -qx "$r" || orphan="$orphan $r"
+  done
+  # burnt is knowingly unreachable and documented as such in PotStore.
+  if [[ "$(echo $orphan)" == "burnt" ]]; then
+    grep -q "NOTE ON .burnt" PotStore.qml \
+      && ok "unreachable state is documented, not silently dead" \
+      || no "unreachable state is documented" "burnt renders but nothing produces it, with no note"
+  elif [[ -z "$(echo $orphan)" ]]; then
+    ok "every rendered state is producible"
+  else
+    no "every rendered state is producible" "orphans:$orphan"
+  fi
+
+  # The README must not advertise a state the code cannot reach.
+  if grep -q '| `burnt`' README.md; then
+    no "README does not claim unreachable states" "burnt is listed as a state"
+  else
+    ok "README does not claim unreachable states"
+  fi
+
+  # Every remote pot source needs a path that CLEARS its pots. A status bar
+  # showing stale state is worse than one showing nothing.
+  grep -q "signal lost()" RemoteHerdrPoller.qml \
+    && ok "unreachable host can drop its pots" \
+    || no "unreachable host can drop its pots" "no lost signal"
+  grep -q "onLost: store.dropRemoteHost" Panel.qml \
+    && ok "lost signal is wired to the store" \
+    || no "lost signal is wired" "signal exists but nothing consumes it"
+
+  # Idle teardown must be reversible; clearing intent strands the feature.
+  grep -q "root.stop()" RemoteHerdrPoller.qml \
+    && no "idle teardown is reversible" "stop() clears desiredRunning with no path back" \
+    || ok "idle teardown is reversible"
+
+  # No plugin-spawned ssh may become the ControlMaster: a reload SIGKILLs it.
+  local guarded
+  guarded=$(cat RemoteHerdrPoller.qml Panel.qml 2>/dev/null \
+            | grep -cE 'ControlMaster=no|"ControlMaster", *"no"')
+  [[ ${guarded:-0} -ge 2 ]] \
+    && ok "plugin ssh calls pin ControlMaster=no" \
+    || no "plugin ssh calls pin ControlMaster=no" "found only ${guarded:-0}"
+
+  # uid must not be guessed: a misplaced socket fails silently. Comments may
+  # legitimately mention the path while explaining why it is not used.
+  grep -vE '^\s*(//|\*)' Relay.qml | grep -q 'run/user/1000' \
+    && no "no hardcoded uid in the socket path" "Relay.qml assumes uid 1000" \
+    || ok "no hardcoded uid in the socket path"
+
+  # Remote-supplied values must never be interpolated into a local shell.
+  grep -q 'root.herdrPath + " bash' RemoteHerdrPoller.qml \
+    && no "remote path is not interpolated into a local shell" "herdrPath is interpolated" \
+    || ok "remote path is not interpolated into a local shell"
+}
+
+groups=(${1:-structure coherence hook install guard stream relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
