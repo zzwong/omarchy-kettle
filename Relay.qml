@@ -66,18 +66,16 @@ QtObject {
   // ---- tokens -------------------------------------------------------------
   // Read lazily and re-read on a miss, which sidesteps directory-watch
   // semantics entirely: a newly added host authenticates on its first event.
-  function loadTokens(done) {
-    tokenLoader.callback = done || null
-    tokenLoader.running = true
-  }
+  //
+  // Callbacks are QUEUED, not stored singly. `running = true` on an
+  // already-running Process is a no-op, so a second caller arriving mid-read
+  // used to overwrite the first's callback and silently strand that
+  // connection until its idle timer fired.
+  property var pendingLoads: []
 
-  function hostFor(token, retry) {
-    if (tokens[token]) return tokens[token]
-    if (retry !== false && tokensLoaded) {
-      // Miss against a stale map: reload once, the caller retries.
-      loadTokens(null)
-    }
-    return ""
+  function loadTokens(done) {
+    if (done) pendingLoads.push(done)
+    if (!tokenLoader.running) tokenLoader.running = true
   }
 
   // Constant-time-ish compare. Timing attacks through ssh jitter are not a
@@ -250,7 +248,6 @@ QtObject {
 
   // ---- plumbing -----------------------------------------------------------
   property Process tokenLoader: Process {
-    property var callback: null
     command: ["bash", "-c",
       // shopt -s dotglob: a token file named .something would otherwise be
       // silently invisible, with no error to explain the denial.
@@ -286,7 +283,11 @@ QtObject {
 
         if (!same) root.tokens = map
         root.tokensLoaded = true
-        if (tokenLoader.callback) { var cb = tokenLoader.callback; tokenLoader.callback = null; cb() }
+        var waiting = root.pendingLoads
+        root.pendingLoads = []
+        for (var w = 0; w < waiting.length; w++) {
+          try { waiting[w]() } catch (e) { root.rejected("callback failed") }
+        }
       }
     }
   }
