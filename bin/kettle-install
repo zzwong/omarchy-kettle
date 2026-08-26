@@ -1,8 +1,9 @@
 #!/bin/bash
-# Kettle installer — wires the agent hooks into Claude Code and Codex.
+# Kettle installer — wires the agent hook into every supported CLI it finds:
+# Claude Code, Codex, Qwen Code, Gemini CLI, Factory droid, and Grok Build.
 #
 # The hook configs need an absolute path to kettle-agent-hook, which depends on
-# where the plugin was cloned. Hand-editing two JSON files is a poor first run,
+# where the plugin was cloned. Hand-editing JSON files is a poor first run,
 # so this resolves the path and merges the entries idempotently.
 #
 #   kettle-install            install hooks for every agent found
@@ -14,12 +15,23 @@ set -uo pipefail
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kettle-agent-hook"
 CLAUDE_SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 CODEX_HOOKS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+QWEN_SETTINGS="${QWEN_HOME:-$HOME/.qwen}/settings.json"
+GEMINI_SETTINGS="$HOME/.gemini/settings.json"
+FACTORY_HOOKS="$HOME/.factory/hooks.json"
+GROK_HOOK_FILE="$HOME/.grok/hooks/kettle.json"
 
-# Claude fires Notification for both permission gates and the idle nudge, and
-# the hook tells them apart by message. Codex has no Notification event and
-# uses PermissionRequest instead.
+# Event vocabularies, verified against each tool's source or official docs:
+# Claude fires Notification for both permission gates and the idle nudge (the
+# hook tells them apart); Codex and Qwen have an explicit PermissionRequest;
+# Gemini renamed the prompt/turn pair to BeforeAgent/AfterAgent; Grok's
+# Notification payload is undocumented, so it is left unwired — a silent
+# permission wait stays "simmering" rather than turning falsely "ready".
 CLAUDE_EVENTS=(SessionStart UserPromptSubmit Notification Stop SessionEnd)
 CODEX_EVENTS=(SessionStart UserPromptSubmit PermissionRequest Stop SessionEnd)
+QWEN_EVENTS=(SessionStart UserPromptSubmit PermissionRequest Stop SessionEnd)
+GEMINI_EVENTS=(SessionStart BeforeAgent Notification AfterAgent SessionEnd)
+FACTORY_EVENTS=(SessionStart UserPromptSubmit Notification Stop SessionEnd)
+GROK_EVENTS=(SessionStart UserPromptSubmit Stop SessionEnd)
 
 mode=install
 case "${1:-}" in
@@ -34,12 +46,21 @@ esac
 
 [[ -x $HOOK ]] || { echo "kettle-agent-hook not executable at $HOOK" >&2; exit 1; }
 
+# merge <file> <mode> <hook> <style> <unit> <async> <events...>
+#   style: "wrapped" nests events under a "hooks" key (Claude, Codex, Qwen,
+#          Gemini, Grok); "bare" puts event names at the top level (droid's
+#          hooks.json — verified at docs.factory.ai).
+#   unit:  "s" or "ms". Qwen and Gemini timeouts are MILLISECONDS — writing
+#          Claude's 5 there would give the hook five milliseconds to live.
+#   async: "yes" writes "async": true; tools whose schema lacks the field
+#          (Gemini, droid, Grok) get "no" rather than an unknown key. The
+#          hook backgrounds itself either way, so sync execution is cheap.
 merge() {
-  local file=$1 mode=$2 hook=$3; shift 3
-  python3 - "$file" "$mode" "$hook" "$@" <<'PY'
+  local file=$1 mode=$2 hook=$3 style=$4 unit=$5 use_async=$6; shift 6
+  python3 - "$file" "$mode" "$hook" "$style" "$unit" "$use_async" "$@" <<'PY'
 import json, os, sys
 
-path, mode, hook, *events = sys.argv[1:]
+path, mode, hook, style, unit, use_async, *events = sys.argv[1:]
 
 if os.path.exists(path):
     try:
@@ -51,7 +72,7 @@ if os.path.exists(path):
 else:
     doc = {}
 
-hooks = doc.setdefault("hooks", {})
+hooks = doc if style == "bare" else doc.setdefault("hooks", {})
 changed = False
 
 def entries_for(event):
@@ -83,20 +104,21 @@ for event in events:
 
     # Never blocking: these hooks only report state, so a slow or dead
     # listener must not stall the agent's prompt.
-    group.append({
-        "hooks": [{
-            "type": "command",
-            "command": hook,
-            "async": True,
-            "timeout": 10 if event == "SessionStart" else 5,
-        }]
-    })
+    seconds = 10 if event == "SessionStart" else 5
+    entry = {
+        "type": "command",
+        "command": hook,
+        "timeout": seconds * 1000 if unit == "ms" else seconds,
+    }
+    if use_async == "yes":
+        entry["async"] = True
+    group.append({"hooks": [entry]})
     changed = True
 
 if mode == "check":
     sys.exit(0)
 
-if not hooks:
+if style != "bare" and not hooks:
     doc.pop("hooks", None)
 
 if changed:
@@ -112,20 +134,65 @@ else:
 PY
 }
 
+# Grok Build reads every *.json under ~/.grok/hooks/, so Kettle owns a whole
+# file there instead of merging into someone else's — install writes it,
+# remove deletes it, and no user config is ever touched.
+grok_file() {
+  local mode=$1
+  case $mode in
+    check)
+      [[ -f $GROK_HOOK_FILE ]] && echo "  hook file           ok" \
+                               || echo "  hook file           MISSING" ;;
+    remove)
+      if [[ -f $GROK_HOOK_FILE ]]; then
+        rm -f "$GROK_HOOK_FILE"
+        echo "  removed $GROK_HOOK_FILE"
+      else
+        echo "  $GROK_HOOK_FILE already absent"
+      fi ;;
+    install)
+      mkdir -p "$(dirname "$GROK_HOOK_FILE")"
+      python3 - "$GROK_HOOK_FILE" "$HOOK" "${GROK_EVENTS[@]}" <<'PY'
+import json, sys
+path, hook, *events = sys.argv[1:]
+doc = {"hooks": {
+    ev: [{"hooks": [{"type": "command", "command": hook,
+                     "timeout": 10 if ev == "SessionStart" else 5}]}]
+    for ev in events
+}}
+with open(path, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+print(f"  wrote {path}")
+PY
+      ;;
+  esac
+}
+
 echo "Kettle hook: $HOOK"
 
-if command -v claude >/dev/null 2>&1 || [[ -e $CLAUDE_SETTINGS ]]; then
-  echo "Claude Code:"
-  merge "$CLAUDE_SETTINGS" "$mode" "$HOOK" "${CLAUDE_EVENTS[@]}"
-else
-  echo "Claude Code: not found, skipping"
-fi
+# target <label> <binary> <config> <style> <unit> <async> <events...>
+target() {
+  local label=$1 bin=$2 file=$3 style=$4 unit=$5 use_async=$6; shift 6
+  if command -v "$bin" >/dev/null 2>&1 || [[ -e $file ]]; then
+    echo "$label:"
+    merge "$file" "$mode" "$HOOK" "$style" "$unit" "$use_async" "$@"
+  else
+    echo "$label: not found, skipping"
+  fi
+}
 
-if command -v codex >/dev/null 2>&1 || [[ -e $CODEX_HOOKS ]]; then
-  echo "Codex:"
-  merge "$CODEX_HOOKS" "$mode" "$HOOK" "${CODEX_EVENTS[@]}"
+target "Claude Code"   claude "$CLAUDE_SETTINGS" wrapped s  yes "${CLAUDE_EVENTS[@]}"
+target "Codex"         codex  "$CODEX_HOOKS"     wrapped s  yes "${CODEX_EVENTS[@]}"
+target "Qwen Code"     qwen   "$QWEN_SETTINGS"   wrapped ms yes "${QWEN_EVENTS[@]}"
+target "Gemini CLI"    gemini "$GEMINI_SETTINGS" wrapped ms no  "${GEMINI_EVENTS[@]}"
+target "Factory droid" droid  "$FACTORY_HOOKS"   bare    s  no  "${FACTORY_EVENTS[@]}"
+
+if command -v grok >/dev/null 2>&1 || [[ -d $HOME/.grok ]]; then
+  echo "Grok Build:"
+  grok_file "$mode"
 else
-  echo "Codex: not found, skipping"
+  echo "Grok Build: not found, skipping"
 fi
 
 if [[ $mode == install ]]; then

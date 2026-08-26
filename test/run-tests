@@ -95,6 +95,30 @@ test_hook() {
   out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"weird '\''quotes'\'' and $(rm -rf /) backticks"}')
   has "hostile message survives base64 transport" "$(field "$out" message)" "backticks"
 
+  # Gemini renamed the prompt/turn pair; the payload shape is otherwise the
+  # same (verified in google-gemini/gemini-cli source).
+  out=$(hook_emit '{"hook_event_name":"BeforeAgent","session_id":"s1","cwd":"/p","transcript_path":"/h/.gemini/tmp/p/chats/session-x.jsonl"}')
+  is "BeforeAgent maps to working" "$(field "$out" state)" "working"
+  is "  and the transcript shape names gemini" "$(field "$out" agent)" "gemini"
+  out=$(hook_emit '{"hook_event_name":"AfterAgent","session_id":"s1","cwd":"/p"}')
+  is "AfterAgent maps to finished" "$(field "$out" state)" "finished"
+
+  # Newer hook systems say why they notified; the type outranks the message.
+  out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"x","notification_type":"permission_prompt"}')
+  is "notification_type permission_prompt maps to blocked" "$(field "$out" state)" "blocked"
+  out=$(hook_emit '{"hook_event_name":"Notification","session_id":"s1","cwd":"/p","message":"permission-ish wording","notification_type":"idle_prompt"}')
+  is "notification_type idle_prompt outranks the message" "$(field "$out" state)" "finished"
+
+  # Grok Build speaks camelCase and sets GROK_* env in hook processes.
+  out=$(GROK_SESSION_ID=g1 hook_emit '{"hookEventName":"UserPromptSubmit","sessionId":"s9","cwd":"/p"}')
+  is "camelCase payload accepted" "$(field "$out" state)" "working"
+  is "  and GROK env names the agent" "$(field "$out" agent)" "grok"
+
+  out=$(QWEN_CODE_SESSION_ID=q1 hook_emit '{"hook_event_name":"Stop","session_id":"s1","cwd":"/p"}')
+  is "QWEN env names the agent" "$(field "$out" agent)" "qwen"
+  out=$(FACTORY_PROJECT_DIR=/p hook_emit '{"hook_event_name":"Stop","session_id":"s1","cwd":"/p"}')
+  is "FACTORY env names the agent" "$(field "$out" agent)" "droid"
+
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
 
@@ -108,7 +132,10 @@ test_hook() {
 test_install() {
   echo "install"
   local T; T=$(mktemp -d)
-  export CLAUDE_CONFIG_DIR="$T/.claude" CODEX_HOME="$T/.codex"
+  # HOME is pinned so targets resolved from $HOME (qwen, gemini, droid, grok)
+  # can never touch the real machine from inside a test run.
+  local RH="$HOME"
+  export CLAUDE_CONFIG_DIR="$T/.claude" CODEX_HOME="$T/.codex" HOME="$T"
   mkdir -p "$CLAUDE_CONFIG_DIR"
   # a pre-existing unrelated hook and setting must survive
   cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'J'
@@ -146,6 +173,35 @@ print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']
   "$ROOT/bin/kettle-install" >/dev/null 2>&1
   is "refuses to touch malformed JSON" "$(cat "$d")" "{ broken"
 
+  # ---- the four doc-verified targets, each with its schema quirk ----
+  mkdir -p "$T/.qwen" "$T/.gemini" "$T/.factory" "$T/.grok"
+  echo '{}' > "$T/.qwen/settings.json"
+  echo '{}' > "$T/.gemini/settings.json"
+  echo '{}' > "$T/.factory/hooks.json"
+  QWEN_HOME="$T/.qwen" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+
+  # Qwen and Gemini timeouts are milliseconds; writing seconds there would
+  # give the hook 5ms to live.
+  is "qwen timeouts are milliseconds" \
+     "$(python3 -c "import json;d=json.load(open('$T/.qwen/settings.json'));print(d['hooks']['SessionStart'][0]['hooks'][0]['timeout'])")" "10000"
+  is "qwen uses PermissionRequest" \
+     "$(python3 -c "import json;print('PermissionRequest' in json.load(open('$T/.qwen/settings.json'))['hooks'])")" "True"
+  is "gemini uses its own event vocabulary" \
+     "$(python3 -c "import json;d=json.load(open('$T/.gemini/settings.json'))['hooks'];print('BeforeAgent' in d and 'AfterAgent' in d and 'UserPromptSubmit' not in d)")" "True"
+  is "gemini gets no async key its schema lacks" \
+     "$(python3 -c "import json;d=json.load(open('$T/.gemini/settings.json'));print('async' in d['hooks']['SessionStart'][0]['hooks'][0])")" "False"
+  is "droid events sit at the top level, unwrapped" \
+     "$(python3 -c "import json;d=json.load(open('$T/.factory/hooks.json'));print('SessionStart' in d and 'hooks' not in d)")" "True"
+  is "grok gets its own hook file" \
+     "$(python3 -c "import json;d=json.load(open('$T/.grok/hooks/kettle.json'));print(sorted(d['hooks']))")" \
+     "['SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']"
+
+  QWEN_HOME="$T/.qwen" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "remove deletes grok's file" "$(ls "$T/.grok/hooks/" 2>/dev/null | wc -l)" "0"
+  is "remove empties droid's top-level events" \
+     "$(python3 -c "import json;print(json.load(open('$T/.factory/hooks.json')))")" "{}"
+
+  export HOME="$RH"
   unset CLAUDE_CONFIG_DIR CODEX_HOME
   rm -rf "$T"
 }

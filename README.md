@@ -11,11 +11,13 @@ one posted by `kettle-emit`, and one arriving through the ssh relay — each
 naming its model from its agent's own catalog.
 
 Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
-including Pi — plus **Claude Code** and **Codex** running in plain terminal
+including Pi — plus agents with hook systems running in plain terminal
 windows outside any multiplexer, and sessions on remote hosts over ssh.
 
-Only Claude Code and Codex have hook systems Kettle can install into. Pi has
-none, so Pi is visible **through herdr only**.
+Six CLIs have hook systems Kettle installs into: **Claude Code**, **Codex**,
+**Qwen Code**, **Gemini CLI**, **Factory droid**, and **Grok Build**. Pi has
+none, so Pi is visible **through herdr only**; anything else can post its own
+events (see [Any other agent](#any-other-agent)).
 
 ![The Kettle panel](docs/panel.png)
 
@@ -74,9 +76,12 @@ fast-forwarding; removal is `omarchy plugin remove zzwong.kettle`.
 
 The second line is deliberately separate: Omarchy's installer never executes
 plugin code, so anything that touches files outside the plugin directory has
-to be a step you run yourself. `kettle-install` merges hook entries into
-`~/.claude/settings.json` and `~/.codex/hooks.json`, pointing at wherever the
-repo lives. It is idempotent, preserves your existing hooks and settings, and
+to be a step you run yourself. `kettle-install` merges hook entries into the
+config of every supported CLI it finds — Claude Code, Codex, Qwen Code,
+Gemini CLI, Factory droid, Grok Build — each in its own dialect (Qwen and
+Gemini count timeouts in milliseconds, droid nests nothing, Grok reads a
+directory so Kettle owns a whole file there), pointing at wherever the repo
+lives. It is idempotent, preserves your existing hooks and settings, and
 `--remove` reverses it cleanly — run it before `omarchy plugin remove`, which
 deletes the scripts the hooks point at. `--check` reports status without
 changing anything.
@@ -100,11 +105,22 @@ which is precisely the state this widget exists to show. Clicking a herdr pot
 focuses its tab, which flips it to `idle`, which clears the pot on the next
 poll. The jump **is** the acknowledgement.
 
-**Claude Code / Codex** — the agent reports its own lifecycle through hooks.
+**Hook-driven agents** (Claude Code, Codex, Qwen Code, Gemini CLI, Factory
+droid, Grok Build) — the agent reports its own lifecycle through hooks.
 Nothing outside a terminal can observe what happens inside one: OSC escape
 sequences flow from the process to the terminal emulator and stop there, with no
 bus and no way for a third party to subscribe. The agent telling you directly is
 the only honest source of state.
+
+The six dialects were verified against each tool's source or official docs,
+not by analogy: Gemini renamed the prompt/turn events to
+`BeforeAgent`/`AfterAgent`; Qwen and droid say *why* they notified
+(`notification_type`), which outranks guessing from message text; Grok speaks
+camelCase, documents no Notification payload — so it is left unwired and a
+permission wait stays `simmering` rather than turning falsely `ready` — and
+identifies itself only through `GROK_*` environment variables, since every
+one of these tools sets `CLAUDE_PROJECT_DIR` as a compatibility alias and it
+therefore proves nothing.
 
 ## Any other agent
 
@@ -117,8 +133,10 @@ whatever herdr reports. Most known agents get a hand-drawn identity mark
 gets its initial in a ring — identifiable, never a wrong logo.
 
 **Outside herdr, the ingestion is a public contract.** Kettle ships hooks
-only for Claude Code and Codex because only they have hook systems to
-install into; anything else integrates by posting its own lifecycle events
+for the six CLIs that have hook systems to install into; anything else —
+opencode and Amp (JS plugin systems rather than event→command config), goose
+(no lifecycle hooks at all), Cursor CLI (hooks documented but currently not
+fired by `cursor-agent`) — integrates by posting its own lifecycle events
 with `bin/kettle-emit` from whatever extension point the tool offers (a
 plugin, a wrapper, a shell alias):
 
@@ -172,10 +190,12 @@ unset.
 
 Each pot names the model beside the agent — `Claude Code · Opus 5`.
 
-Where it comes from differs by agent, because the two hook systems disagree:
-Codex puts `model` in the hook payload, Claude Code does not. For Claude the
-hook seeks the last 256 KB of the session transcript (these files reach
-megabytes) and reads the newest assistant message.
+Where it comes from differs by agent, because the hook systems disagree:
+Codex and Qwen Code put `model` in the hook payload; Claude Code does not, so
+the hook seeks the last 256 KB of the session transcript (these files reach
+megabytes) and reads the newest assistant message. Gemini, droid and Grok
+carry no model in payload or readable transcript, so their pots go without —
+no number is better than a guessed one.
 
 Display names are resolved the way pi resolves models: agents already
 maintain model catalogs on disk — Codex refreshes `~/.codex/models_cache.json`,
