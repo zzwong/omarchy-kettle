@@ -19,8 +19,6 @@ Six CLIs have hook systems Kettle installs into: **Claude Code**, **Codex**,
 none, so Pi is visible **through herdr only**; anything else can post its own
 events (see [Any other agent](#any-other-agent)).
 
-![The Kettle panel](docs/panel.png)
-
 ## Why
 
 Agent sessions are long, bursty, and easy to lose track of. You kick one off,
