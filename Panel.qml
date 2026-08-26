@@ -383,8 +383,8 @@ Panel {
                 color: root.severityColor(row.modelData.state)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.title
-                anchors.left: rowMark.right
-                anchors.leftMargin: Style.space(6)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
 
                 // Only needs-attention moves. Motion is reserved for the one
@@ -399,7 +399,7 @@ Panel {
               }
 
               Column {
-                anchors.left: rowGlyph.right
+                anchors.left: rowMark.right
                 anchors.leftMargin: Style.space(11)
                 anchors.right: age.left
                 anchors.rightMargin: Style.space(8)
@@ -417,14 +417,19 @@ Panel {
 
                 Text {
                   text: {
-                    var head = row.modelData.project ? row.modelData.project + " · " : ""
-                    if (row.modelData.host) head += "@" + row.modelData.host + " · "
+                    // The status glyph now carries the state, so repeating it
+                    // here only crowds the row and elides what is actually
+                    // informative — the duration and the host.
+                    var bits = []
+                    if (row.modelData.project) bits.push(row.modelData.project)
+                    if (row.modelData.host) bits.push("@" + row.modelData.host)
                     var ran = store.ranWord(row.modelData)
-                    // A finished pot reports how long it ran; a live one
-                    // reports what it is doing.
-                    if (ran && !store.isLive(row.modelData.state))
-                      return head + root.stateWord(row.modelData) + " · " + ran
-                    return head + root.stateWord(row.modelData)
+                    if (ran && !store.isLive(row.modelData.state)) bits.push(ran)
+                    // Kept only where the word says more than the glyph can.
+                    if (row.modelData.state === "needs-attention") bits.push("needs approval")
+                    else if (row.modelData.state === "burnt") bits.push("failed")
+                    else if (row.modelData.state === "murky") bits.push("unclear")
+                    return bits.join(" · ")
                   }
                   color: Qt.darker(root.bar.foreground, 1.6)
                   font.family: root.bar.fontFamily
@@ -440,8 +445,8 @@ Panel {
                 color: Qt.darker(root.bar.foreground, 1.6)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(8)
+                anchors.right: rowGlyph.left
+                anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
               }
             }
