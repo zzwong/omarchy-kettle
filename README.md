@@ -105,6 +105,25 @@ and launch herdr with a matching title, e.g. `ghostty --title=herdr -e herdr`.
 On multi-process terminals Kettle finds it automatically and you can leave this
 unset.
 
+## Model
+
+Each pot names the model beside the agent — `Claude Code · Opus 5`.
+
+Where it comes from differs by agent, because the two hook systems disagree:
+Codex puts `model` in the hook payload, Claude Code does not. For Claude the
+hook seeks the last 256 KB of the session transcript (these files reach
+megabytes) and reads the newest assistant message. Remote sessions carry the
+string over the relay, where it is length-capped and character-stripped —
+it is self-reported and cosmetic, unlike host and window, which the relay
+always derives itself.
+
+There is deliberately **no context-usage readout**. The transcript exposes no
+context-window field, and the nearest candidate — `cache_read_input_tokens` —
+is not a stand-in: on a long session it reads several times the window size,
+because after compaction it counts cached prefix reads rather than live
+context. A number that looks authoritative and is wrong is worse than no
+number.
+
 ## Keyboard
 
 The panel is fully keyboard driven.
@@ -170,6 +189,10 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
   short of hooking every tool call.
 - **Hook pots do not survive a shell reload.** They live in memory; herdr pots
   repopulate from the next poll, agent pots reappear on their next event.
+- **herdr pots show no model.** `herdr api snapshot` exposes neither a model
+  field nor a transcript path, so there is nothing to read. The same agent
+  therefore names its model outside herdr and not inside it — inconsistent,
+  but preferable to guessing from `cwd`, which breaks across worktrees.
 - **herdr run durations are accurate to the 2s poll.** Hook-sourced pots are
   exact, so the same work can be reported a second apart by the two sources.
 

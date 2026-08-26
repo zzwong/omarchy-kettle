@@ -407,7 +407,11 @@ Panel {
                 spacing: Style.space(1)
 
                 Text {
-                  text: row.modelData.label
+                  // Model belongs beside the agent, not in the subtitle: it is
+                  // part of what is running, not what it is doing.
+                  text: row.modelData.model
+                      ? row.modelData.label + "  ·  " + store.prettyModel(row.modelData.model)
+                      : row.modelData.label
                   color: row.isMurky ? Color.muted : root.severityColor(row.modelData.state)
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.bodySmall

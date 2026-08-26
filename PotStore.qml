@@ -178,7 +178,10 @@ QtObject {
       paneId: "",
       windowAddr: String(ev.window || ""),
       host: String(ev.host || ""),
-      agentKind: String(ev.agent || "")
+      agentKind: String(ev.agent || ""),
+      // Read from the session transcript by the hook: the payload itself
+      // carries no model field.
+      model: String(ev.model || "")
     }
 
     map[key] = pot
@@ -197,6 +200,31 @@ QtObject {
       case "":       return "agent"
       default:       return String(kind).charAt(0).toUpperCase() + String(kind).slice(1)
     }
+  }
+
+  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5-codex" -> "GPT-5 Codex".
+  // Version fragments join with a dot; everything else is a word.
+  function prettyModel(m) {
+    var raw = String(m || "")
+    if (!raw) return ""
+    var parts = raw.split("-")
+    var out = []
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i]
+      if (!p) continue
+      if (/^\d+$/.test(p) && out.length > 0 && /\d$/.test(out[out.length - 1])) {
+        // consecutive numbers are one version, not two words
+        out[out.length - 1] += "." + p
+      } else if (/^(gpt|o\d)$/i.test(p)) {
+        out.push(p.toUpperCase())
+      } else if (/^\d/.test(p)) {
+        out.push(p)
+      } else {
+        out.push(p.charAt(0).toUpperCase() + p.slice(1))
+      }
+    }
+    // "GPT 5" reads better hyphenated, matching how the vendor writes it.
+    return out.join(" ").replace(/^GPT (\d)/, "GPT-$1")
   }
 
   function hookList() {

@@ -130,6 +130,10 @@ QtObject {
       state: state,
       cwd: String(raw.cwd || "").slice(0, 512),
       message: String(raw.message || "").slice(0, 160),
+      // Cosmetic and self-reported, so it is bounded and never trusted for
+      // anything that matters — but stripping it would blank the model on
+      // every remote pot.
+      model: String(raw.model || "").slice(0, 40).replace(/[^A-Za-z0-9._-]/g, ""),
       host: host,
       window: "",
       focused: false
