@@ -311,6 +311,29 @@ STUB
   rm -rf "$T"
 }
 
+# ------------------------------------------------------------ pi-model tests
+# The herdr pi pot's model comes from pi's cwd-keyed session logs.
+test_pimodel() {
+  echo "pi-model"
+  local T; T=$(mktemp -d)
+  local d="$T/sessions/--srv-app--"
+  mkdir -p "$d"
+  printf '%s\n' \
+    '{"type":"session","cwd":"/srv/app","id":"s1"}' \
+    '{"type":"message","message":{"role":"assistant","model":"deepseek-v4-flash","usage":{}}}' \
+    > "$d/2026-01-01T00-00-00-000Z_a.jsonl"
+
+  is "reads the newest session model" \
+     "$(KETTLE_PI_DIR="$T" "$ROOT/bin/kettle-pi-model" /srv/app)" "deepseek-v4-flash"
+  # /srv-app mangles to the SAME directory as /srv/app; the session's own cwd
+  # record must break the tie.
+  is "mangle collision rejected by the cwd record" \
+     "$(KETTLE_PI_DIR="$T" "$ROOT/bin/kettle-pi-model" /srv-app)" ""
+  is "unknown cwd prints nothing" \
+     "$(KETTLE_PI_DIR="$T" "$ROOT/bin/kettle-pi-model" /elsewhere)" ""
+  rm -rf "$T"
+}
+
 # ------------------------------------------------------------ coherence tests
 # The suite was green while two user-visible defects sat in the QML layer: a
 # documented state nothing could produce, and pots that outlived their host.
@@ -386,7 +409,7 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     || ok "remote path is not interpolated into a local shell"
 }
 
-groups=(${1:-structure coherence hook install guard stream relay})
+groups=(${1:-structure coherence hook install guard stream pimodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

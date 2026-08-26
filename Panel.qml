@@ -136,7 +136,12 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var addr = String(text || "").trim()
-        if (addr.length > 0) root.focusWindow(addr)
+        if (addr.length > 0) return root.focusWindow(addr)
+        // Refusing to guess is right; refusing silently is not. This is the
+        // one failure a user can actually fix (set herdrWindow), so say so.
+        console.warn("kettle: cannot locate herdr's window — herdr's internal "
+          + "tab switched, but nothing was raised. On a single-process "
+          + "terminal set \"herdrWindow\" to a title substring (see README).")
       }
     }
   }
@@ -181,6 +186,7 @@ Panel {
 
   PotStore {
     id: store
+    pluginDir: root.pluginDir
     onPotChanged: function(pot, fromState) {
       if (root.notify) notifier.consider(pot, fromState)
     }

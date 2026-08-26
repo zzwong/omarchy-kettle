@@ -267,7 +267,7 @@ escalation, the bar is the truth.
 ```bash
 ./test/run-tests           # everything
 ./test/run-tests hook      # one group: structure | coherence | hook |
-                           #   install | guard | stream | relay
+                           #   install | guard | stream | pimodel | relay
 ```
 
 No framework, no dependencies beyond bash and python3. The relay group needs a
@@ -289,10 +289,13 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
   short of hooking every tool call.
 - **Hook pots do not survive a shell reload.** They live in memory; herdr pots
   repopulate from the next poll, agent pots reappear on their next event.
-- **herdr pots show no model.** `herdr api snapshot` exposes neither a model
-  field nor a transcript path, so there is nothing to read. The same agent
-  therefore names its model outside herdr and not inside it — inconsistent,
-  but preferable to guessing from `cwd`, which breaks across worktrees.
+- **herdr pots show a model only for pi.** `herdr api snapshot` exposes
+  neither a model field nor a transcript path. pi escapes this because it keys
+  its session logs by working directory, which the snapshot does carry — so a
+  local pi pot's model is tail-read from its newest session file, one short
+  process per state change. Claude Code and Codex pots stay model-less inside
+  herdr: Codex keys sessions by date, and a Claude cwd can host several
+  concurrent sessions, so the same trick would sometimes name the wrong one.
 - **herdr run durations are accurate to the 2s poll.** Hook-sourced pots are
   exact, so the same work can be reported a second apart by the two sources.
 

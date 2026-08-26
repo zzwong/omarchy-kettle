@@ -1,0 +1,53 @@
+#!/bin/bash
+# Print the model slug of the newest pi session matching a cwd, or nothing.
+#
+# herdr's snapshot exposes no model and no transcript path, but pi keys its
+# session logs by working directory — sessions/--<cwd with / as ->--/ — and
+# stamps each assistant message with the model that produced it. That lets a
+# herdr pi pot name its model with the same transcript-tail trick the agent
+# hook already uses for Claude, spending one short process per state change
+# rather than anything per poll.
+set -uo pipefail
+
+cwd=${1:-}
+[[ -z $cwd ]] && exit 0
+
+base="${KETTLE_PI_DIR:-$HOME/.pi/agent}/sessions"
+trimmed=${cwd#/}; trimmed=${trimmed%/}
+dir="$base/--${trimmed//\//-}--"
+[[ -d $dir ]] || exit 0
+
+newest=$(ls -1t -- "$dir"/*.jsonl 2>/dev/null | head -1)
+[[ -z ${newest:-} ]] && exit 0
+
+python3 - "$newest" "$cwd" <<'PY'
+import json, sys
+path, want = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as f:
+        head = f.readline()
+        f.seek(0, 2)
+        f.seek(max(0, f.tell() - 65536))
+        tail = f.read().decode("utf-8", "replace").split("\n")
+except Exception:
+    sys.exit(0)
+
+# The directory name is a lossy mangle — a dash in a path segment reads the
+# same as a path separator — so the session's own cwd record is the authority.
+try:
+    if str(json.loads(head).get("cwd") or "") != want:
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+
+for line in reversed(tail):
+    if not line.strip():
+        continue
+    try:
+        m = json.loads(line).get("message") or {}
+    except Exception:
+        continue
+    if isinstance(m, dict) and m.get("model"):
+        print(str(m["model"])[:64])
+        break
+PY

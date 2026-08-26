@@ -12,6 +12,9 @@ import Quickshell.Io
 QtObject {
   id: root
 
+  // Where the plugin's bin/ scripts live; bound by the Panel.
+  property string pluginDir: ""
+
   // herdr-derived pots, re-derived from the snapshot every tick.
   property var herdrPots: []
 
@@ -109,6 +112,22 @@ QtObject {
       if ((state === "ready" || state === "burnt") && was && was.runStart)
         ranMs = now - was.runStart
 
+      // pi keys its session logs by cwd, so a pi pot can name its model even
+      // though herdr's snapshot cannot. A fresh prompt may have switched
+      // models, so the cache entry is dropped on each transition into
+      // simmering and re-read — one short process per state change, never
+      // anything per poll.
+      var model = ""
+      if (String(ag.agent) === "pi") {
+        var cwdFull = String(ag.cwd || "")
+        if (state === "simmering" && (!was || was.state !== "simmering")
+            && piModels[cwdFull] !== undefined) {
+          var pmm = Object.assign({}, piModels); delete pmm[cwdFull]; piModels = pmm
+        }
+        if (piModels[cwdFull] === undefined) resolvePiModel(cwdFull)
+        model = piModels[cwdFull] || ""
+      }
+
       var pot = {
         key: key,
         source: "herdr",
@@ -122,7 +141,8 @@ QtObject {
         since: (was && !changed) ? was.since : now,
         seq: seq,
         paneId: String(ag.pane_id),
-        agentKind: String(ag.agent || "")
+        agentKind: String(ag.agent || ""),
+        model: model
       }
       next.push(pot)
 
@@ -131,6 +151,39 @@ QtObject {
     }
 
     herdrPots = next
+  }
+
+  // ---- pi model resolution -------------------------------------------------
+  // cwd -> model slug. "" means "resolved, nothing found" and stops retries;
+  // absence means "never asked". Local pots only: the session files this
+  // reads live on this machine's disk.
+  property var piModels: ({})
+  property var piQueue: []
+  property string piCwdInFlight: ""
+
+  function resolvePiModel(cwd) {
+    if (!cwd || pluginDir.length === 0) return
+    if (piCwdInFlight === cwd || piQueue.indexOf(cwd) !== -1) return
+    if (piModelProc.running) { piQueue.push(cwd); return }
+    piCwdInFlight = cwd
+    piModelProc.command = [pluginDir + "bin/kettle-pi-model", cwd]
+    piModelProc.running = true
+  }
+
+  property Process piModelProc: Process {
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (root.piCwdInFlight.length === 0) return
+        var pm = Object.assign({}, root.piModels)
+        pm[root.piCwdInFlight] = String(text || "").trim().slice(0, 64)
+        root.piModels = pm
+      }
+    }
+    onExited: {
+      root.piCwdInFlight = ""
+      if (root.piQueue.length > 0) root.resolvePiModel(root.piQueue.shift())
+    }
   }
 
   // ---- remote herdr source -------------------------------------------------
