@@ -45,7 +45,9 @@ print("\x1f".join([
     g("hook_event_name", "hookEventName"),
     g("session_id", "sessionId"),
     g("cwd"),
-    g("message"),
+    # Notification carries message, UserPromptSubmit carries prompt; no event
+    # has both, so the merged field is the row detail either way.
+    g("message", "prompt"),
     g("agent_type"),
     g("transcript_path"),
     g("model"),
