@@ -75,11 +75,20 @@ case ${event,,} in
   *)                                        exit 0 ;;
 esac
 
-# Label the pot by whichever agent actually produced the event.
-agent=${agent_type:-claude}
+# Label the pot by whichever agent actually produced the event. Codex sends
+# no agent_type at all (verified against codex-cli 0.149.1 by capturing live
+# payloads), so an absent field falls through to the transcript's shape:
+# Codex transcripts are sessions/…/rollout-*.jsonl, which survives a custom
+# CODEX_HOME, where Claude's are <uuid>.jsonl under ~/.claude.
+agent=${agent_type:-}
 case ${agent,,} in
   *codex*)  agent="codex"  ;;
   *claude*) agent="claude" ;;
+  *)
+    case ${transcript:-} in
+      */rollout-*.jsonl|*/.codex/*) agent="codex"  ;;
+      *)                            agent="claude" ;;
+    esac ;;
 esac
 
 # Remote mode is switched on by the presence of a relay config, which only
@@ -232,7 +241,7 @@ for line in reversed(lines):
         model = str(m["model"])
         break
 
-# claude-opus-5 -> opus-5, gpt-5-codex -> gpt-5-codex
+# claude-opus-5 -> opus-5, gpt-5.6-luna -> gpt-5.6-luna
 short = model.replace("claude-", "").replace("-20", " ").split(" ")[0]
 print(short or "-")
 ' "$transcript" 2>/dev/null)

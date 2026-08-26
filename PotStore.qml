@@ -280,8 +280,11 @@ QtObject {
     }
   }
 
-  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5.6-sol" -> "GPT-5.6 Sol".
-  // Version fragments join with a dot; everything else is a word.
+  // "opus-5" -> "Opus 5", "haiku-4-5" -> "Haiku 4.5", "gpt-5.6-luna" -> "GPT-5.6-Luna".
+  // Version fragments join with a dot; everything else is a word. Checked
+  // against codex-cli's models_cache.json: every current display name is the
+  // slug hyphen-joined and capitalized, so GPT models keep their hyphens
+  // where Anthropic's names are words.
   function prettyModel(m) {
     var raw = String(m || "")
     if (!raw) return ""
@@ -301,8 +304,7 @@ QtObject {
         out.push(p.charAt(0).toUpperCase() + p.slice(1))
       }
     }
-    // "GPT 5" reads better hyphenated, matching how the vendor writes it.
-    return out.join(" ").replace(/^GPT (\d)/, "GPT-$1")
+    return /^gpt/i.test(raw) ? out.join("-") : out.join(" ")
   }
 
   function hookList() {
