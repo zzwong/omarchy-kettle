@@ -6,9 +6,9 @@ pot to land in the terminal it's running in.
 
 ![Kettle on the bar](docs/demo.png)
 
-Six sessions above, from four sources: a herdr pane, hook-driven sessions,
+Seven sessions above, from four sources: a herdr pane, hook-driven sessions,
 one posted by `kettle-emit`, and one arriving through the ssh relay — each
-naming its model from its agent's own catalog.
+agent wearing its own mark and naming its model from its agent's catalog.
 
 Kettle knows about **herdr** sessions — which covers every agent herdr tracks,
 including Pi — plus agents with hook systems running in plain terminal
