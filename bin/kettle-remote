@@ -19,6 +19,7 @@ set -uo pipefail
 
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/kettle"
 TOKENS="$CFG/tokens"
+HOSTS="$CFG/hosts"
 SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kettle/kettle.sock"
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kettle-agent-hook"
 PORT_DEFAULT=47761
@@ -28,7 +29,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 port_for() { sed -n 's/^port=//p' "$CFG/relay.conf" 2>/dev/null | head -1 || true; }
 
 ensure_local() {
-  mkdir -p "$CFG" "$TOKENS"; chmod 700 "$CFG" "$TOKENS"
+  mkdir -p "$CFG" "$TOKENS" "$HOSTS"; chmod 700 "$CFG" "$TOKENS" "$HOSTS"
   [[ -f $CFG/relay.conf ]] || printf 'port=%s\n' "$PORT_DEFAULT" > "$CFG/relay.conf"
 }
 
@@ -49,6 +50,23 @@ cmd_install() {
   token=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
   printf '%s' "$token" > "$TOKENS/$host"
   chmod 600 "$TOKENS/$host"
+
+  # Resolve herdr's absolute path ONCE, through a login shell so the remote's
+  # own PATH setup applies. Every later ssh we issue is non-interactive and
+  # gets no login shell, so a bare `herdr` there fails with "command not
+  # found" — silently, because those calls are fire-and-forget.
+  local herdr_path
+  herdr_path=$(ssh -o BatchMode=yes -o ControlMaster=no "$host" \
+    'bash -lc "command -v herdr" 2>/dev/null || zsh -lc "command -v herdr" 2>/dev/null' 2>/dev/null | head -1 | tr -d "\r")
+  if [[ -n $herdr_path ]]; then
+    echo "herdr=$herdr_path" > "$HOSTS/$host"
+    chmod 600 "$HOSTS/$host"
+    echo "  herdr found at $herdr_path"
+  else
+    : > "$HOSTS/$host"; chmod 600 "$HOSTS/$host"
+    echo "  herdr not found on $host — agent hooks will still work,"
+    echo "  but remote herdr sessions will not appear. Install herdr and re-run."
+  fi
 
   echo "Installing on $host…"
   # The hook travels base64-encoded inside the script rather than on a second
@@ -185,6 +203,11 @@ cmd_status() {
   [[ -z $host ]] && return 0
   printf '\n%s:\n' "$host"
   printf '  token      : %s\n' "$([[ -f $TOKENS/$host ]] && echo present || echo MISSING)"
+  printf '  herdr path : %s\n' "$(sed -n 's/^herdr=//p' "$HOSTS/$host" 2>/dev/null | head -1 || true)"
+  printf '  ssh master : %s\n' \
+    "$(ssh -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" -O check "$host" 2>&1 | grep -q "Master running" \
+        && echo "running — remote herdr visible" \
+        || echo "none — remote herdr sessions will NOT appear (see ControlMaster in README)")"
   printf '  remote conf: %s\n' \
     "$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'test -f ~/.config/kettle/relay.conf && echo present || echo MISSING' 2>/dev/null || echo unreachable)"
   printf '  remote hook: %s\n' \
@@ -196,7 +219,7 @@ cmd_uninstall() {
   local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote uninstall <host>"
   # Delete the token first: that alone revokes the host, even if the remote is
   # unreachable and the rest of the cleanup cannot run.
-  rm -f "$TOKENS/$host" && echo "revoked token for $host"
+  rm -f "$TOKENS/$host" "$HOSTS/$host" && echo "revoked token for $host"
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' <<'REMOTE' 2>&1 | sed 's/^/  /' || echo "  (remote unreachable — token is revoked regardless)"
 rm -f ~/.local/bin/kettle-agent-hook ~/.config/kettle/relay.conf
 rm -rf ~/.local/state/kettle

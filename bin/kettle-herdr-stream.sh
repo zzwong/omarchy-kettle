@@ -25,6 +25,11 @@
 
 set -uo pipefail
 
+# Absolute path injected by the caller. A bare `herdr` would resolve against a
+# non-interactive PATH that usually lacks ~/.local/bin, and the failure would
+# look identical to "herdr is down".
+HERDR=${KETTLE_HERDR:-herdr}
+
 INTERVAL=${KETTLE_INTERVAL:-2}
 HEARTBEAT=${KETTLE_HEARTBEAT:-30}
 
@@ -34,7 +39,7 @@ prev=""
 last_beat=$SECONDS
 
 while :; do
-  raw=$(herdr api snapshot 2>/dev/null)
+  raw=$("$HERDR" api snapshot 2>/dev/null)
 
   if [[ -z $raw ]]; then
     # Distinguish "herdr is gone" from "nothing changed". Hashing the error

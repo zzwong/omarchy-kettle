@@ -30,8 +30,16 @@ QtObject {
   id: root
 
   required property string host
-  property QtObject store: null
   property string pluginDir: ""
+
+  // Absolute path to herdr on the remote, discovered at install. Empty means
+  // herdr was not found there — the channel would only ever emit "down", so
+  // it is not worth opening.
+  property string herdrPath: ""
+  // Deliberately no `store` property: naming it `store` here shadowed the
+  // Panel's PotStore id inside the delegate, so `store: store` bound the
+  // property to itself and every snapshot went nowhere. The poller emits
+  // signals; the delegate decides where they land.
 
   // Only run while the user already holds a connection. `ssh -O check` asks
   // the local mux socket and touches no network, so this is a free probe.
@@ -56,15 +64,23 @@ QtObject {
   readonly property int idleTeardownMs: 600000
   property double emptySince: 0
 
-  signal agentsChanged(var agents)
+  // NOT `agentsChanged` — QML reserves <prop>Changed for property signals.
+  signal snapshotAgents(var list)
   signal down()
 
   function log(msg) { console.warn("kettle[" + host + "]: " + msg) }
 
   // ---- lifecycle ----------------------------------------------------------
-  function start() {
-    desiredRunning = true
-    if (!chan.running && masterAlive) chan.running = true
+  // `desiredRunning` is intent; `canRun` is capability. Separating them fixes
+  // a startup race: herdrPath arrives asynchronously from the token loader, so
+  // at Component.onCompleted it is still empty. Refusing to start there would
+  // strand the channel until something else nudged it.
+  readonly property bool canRun: masterAlive && herdrPath.length > 0
+
+  function start() { desiredRunning = true }
+  onCanRunChanged: {
+    if (canRun && desiredRunning && !chan.running && !retry.running) chan.running = true
+    else if (!canRun && chan.running) chan.running = false
   }
 
   function stop() {
@@ -114,7 +130,7 @@ QtObject {
     } else {
       emptySince = 0
     }
-    root.agentsChanged(clean)
+    root.snapshotAgents(clean)
   }
 
   property Process chan: Process {
@@ -125,7 +141,7 @@ QtObject {
       "bash", "-c",
       "ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p" +
       " -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -o ConnectTimeout=10 " +
-      root.host + " 'export PATH=$HOME/.local/bin:$PATH; bash -s' < " +
+      root.host + " 'KETTLE_HERDR=" + root.herdrPath + " bash -s' < " +
       root.pluginDir + "bin/kettle-herdr-stream.sh | " +
       root.pluginDir + "bin/kettle-line-guard"
     ]
@@ -163,7 +179,7 @@ QtObject {
   property Timer retry: Timer {
     repeat: false
     onTriggered: {
-      if (!root.desiredRunning || !root.masterAlive) return
+      if (!root.desiredRunning || !root.canRun) return
       if (!root.chan.running) root.chan.running = true
     }
   }
@@ -178,8 +194,8 @@ QtObject {
         root.masterAlive = alive
         root.log(alive ? "master up" : "master gone")
       }
-      if (!alive && root.chan.running) root.chan.running = false
-      else if (alive && root.desiredRunning && !root.chan.running && !root.retry.running)
+      if (!root.canRun && root.chan.running) root.chan.running = false
+      else if (root.canRun && root.desiredRunning && !root.chan.running && !root.retry.running)
         root.chan.running = true
     }
   }
@@ -190,6 +206,9 @@ QtObject {
     repeat: true
     onTriggered: {
       if (!root.check.running) root.check.running = true
+      // Capability may have arrived after start(); pick it up here too.
+      if (root.desiredRunning && root.canRun && !root.chan.running && !root.retry.running)
+        root.chan.running = true
       if (!root.streaming) return
 
       // Silence is ambiguous: a quiet channel and a dead one look identical

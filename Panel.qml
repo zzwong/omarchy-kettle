@@ -102,7 +102,10 @@ Panel {
       Quickshell.execDetached([
         "ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
         "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
-        pot.host, "herdr agent focus " + pot.paneId
+        // Absolute path, resolved at install: a non-interactive ssh gets no
+        // login shell, so a bare `herdr` fails with "command not found" —
+        // silently, because execDetached discards output.
+        pot.host, (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
       ])
       return
     }
@@ -152,16 +155,21 @@ Panel {
 
   // One streaming channel per configured host. The token files double as the
   // host registry, so adding or revoking a host is a file operation.
-  Repeater {
+  //
+  // Instantiator, not Repeater: Repeater only instantiates Item delegates and
+  // silently produces nothing for a QtObject, which is what this is.
+  Instantiator {
     id: remoteHosts
     model: relay.hostList
     delegate: RemoteHerdrPoller {
       required property string modelData
       host: modelData
-      store: store
       pluginDir: root.pluginDir
+      herdrPath: relay.herdrPathFor(modelData)
       Component.onCompleted: start()
-      onAgentsChanged: function(agents) { store.reconcileRemote(host, agents) }
+      // Renamed from agentsChanged: that collides with the implicit
+      // property-change signal QML generates, so the handler never fired.
+      onSnapshotAgents: function(list) { store.reconcileRemote(host, list) }
       onDown: store.dropRemoteHost(host)
     }
   }

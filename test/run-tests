@@ -212,10 +212,20 @@ test_structure() {
      "$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")" "kettle"
   hasnt "no real name in manifest" "$(cat manifest.json)" "REDACTED"
   hasnt "no home path baked into QML" "$(cat ./*.qml)" "/home/user"
-  for f in bin/*; do
+  # Check each file with the interpreter its shebang actually names — bin/
+  # holds both bash and python now.
+  for f in bin/* ; do
     [[ -x $f ]] && ok "executable: $f" || no "executable: $f" "not chmod +x"
-    bash -n "$f" 2>/dev/null && ok "parses: $f" || no "parses: $f" "syntax error"
+    case "$(head -1 "$f")" in
+      *python*) python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$f" 2>/dev/null \
+                  && ok "parses (py): $f" || no "parses (py): $f" "syntax error" ;;
+      *)        bash -n "$f" 2>/dev/null \
+                  && ok "parses (sh): $f" || no "parses (sh): $f" "syntax error" ;;
+    esac
   done
+  # The remote stream loop is sourced by ssh, not executed locally.
+  bash -n bin/kettle-herdr-stream.sh 2>/dev/null \
+    && ok "parses (sh): remote stream loop" || no "parses (sh): remote stream loop" "syntax error"
 }
 
 groups=(${1:-structure hook install relay})

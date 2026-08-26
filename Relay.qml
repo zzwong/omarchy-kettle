@@ -24,6 +24,17 @@ QtObject {
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ("/run/user/1000")
   readonly property string sockPath: runtimeDir + "/kettle/kettle.sock"
   readonly property string tokenDir: Quickshell.env("HOME") + "/.config/kettle/tokens"
+  readonly property string hostDir: Quickshell.env("HOME") + "/.config/kettle/hosts"
+
+  // host -> { herdr: "/abs/path" }. Discovered once at install through a login
+  // shell, because every ssh we issue afterwards is non-interactive and gets
+  // no PATH setup.
+  property var hostInfo: ({})
+
+  function herdrPathFor(host) {
+    var info = hostInfo[host]
+    return (info && info.herdr) ? info.herdr : ""
+  }
 
   // token -> host. The FILENAME is the origin host; a payload never gets to
   // say where it came from.
@@ -243,18 +254,37 @@ QtObject {
     command: ["bash", "-c",
       // shopt -s dotglob: a token file named .something would otherwise be
       // silently invisible, with no error to explain the denial.
-      'shopt -s dotglob nullglob; d="$HOME/.config/kettle/tokens"; [ -d "$d" ] || exit 0; ' +
-      'for f in "$d"/*; do [ -f "$f" ] || continue; printf "%s\\t%s\\n" "$(basename "$f")" "$(cat "$f")"; done']
+      'shopt -s dotglob nullglob; ' +
+      'd="$HOME/.config/kettle/tokens"; h="$HOME/.config/kettle/hosts"; ' +
+      '[ -d "$d" ] || exit 0; ' +
+      'for f in "$d"/*; do [ -f "$f" ] || continue; ' +
+      '  n=$(basename "$f"); ' +
+      '  hp=$(sed -n "s/^herdr=//p" "$h/$n" 2>/dev/null | head -1); ' +
+      '  printf "%s\\t%s\\t%s\\n" "$n" "$(cat "$f")" "$hp"; done']
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var map = {}
+        var info = {}
         var lines = String(text || "").split("\n")
         for (var i = 0; i < lines.length; i++) {
           var p = lines[i].split("\t")
-          if (p.length === 2 && p[1].length > 0) map[p[1]] = p[0]
+          if (p.length < 2 || p[1].length === 0) continue
+          map[p[1]] = p[0]
+          info[p[0]] = { herdr: (p.length > 2 ? p[2] : "") }
         }
-        root.tokens = map
+        root.hostInfo = info
+        // Only reassign when the set actually differs. `tokens` is reloaded
+        // on every auth miss, and hostList binds to it — reassigning an
+        // identical map churned the Repeater and spawned a duplicate ssh
+        // channel per reload.
+        var same = true
+        var oldKeys = Object.keys(root.tokens), newKeys = Object.keys(map)
+        if (oldKeys.length !== newKeys.length) same = false
+        else for (var j = 0; j < newKeys.length; j++)
+          if (root.tokens[newKeys[j]] !== map[newKeys[j]]) { same = false; break }
+
+        if (!same) root.tokens = map
         root.tokensLoaded = true
         if (tokenLoader.callback) { var cb = tokenLoader.callback; tokenLoader.callback = null; cb() }
       }

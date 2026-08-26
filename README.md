@@ -144,6 +144,63 @@ Bind the panel itself in `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + SHIFT + T", "Kettle", "omarchy-shell kettle toggle")
 ```
 
+## Remote hosts over ssh
+
+Agent sessions on another machine appear on your bar, tagged with the host.
+
+```bash
+bin/kettle-remote install <host>
+bin/kettle-remote test <host>
+bin/kettle-remote status <host>
+```
+
+Install mints a per-host token, pushes the hook, wires the remote agent
+configs, and probes herdr's absolute path through a login shell. It then
+prints an ssh block to add:
+
+```
+Host <host>
+    RemoteForward 127.0.0.1:47761 /run/user/1000/kettle/kettle.sock
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+```
+
+`ControlMaster` earns its place twice: jumping to a remote pane reuses the
+connection you already have (~48ms rather than ~100ms), and it keeps the
+reverse forward alive when the session that created it exits.
+
+### How it works, and what it costs
+
+**Remote agents** post events through the reverse forward into the unix socket
+the shell already listens on — no daemon, no systemd unit, nothing installed
+beyond one hook script. Window identity crosses ssh for free: the hook writes
+an OSC 2 title nonce, the terminal republishes the title, and the relay matches
+it locally (~400ms).
+
+**Remote herdr** is streamed rather than polled. One long-lived ssh channel per
+host runs a loop on the far side that polls herdr's own unix socket — no
+crypto, no network — and emits a line only when state changes. Measured: a
+per-poll `ssh host herdr api snapshot` costs ~4.5ms of local CPU and wakes the
+radio every interval; the channel costs 0ms over 26s and sent one line in 28s.
+
+**Security.** The relay authenticates a per-host bearer token whose *filename*
+is the origin host, so a payload can never claim to come from somewhere it
+does not. Host, window and focus are always derived locally, never trusted
+from the wire. Revoking a host is deleting its token file — which works even
+when the host is unreachable. Residual risk, stated plainly: anything running
+as your user on the remote can read that token and forge pots for that host.
+That is irreducible, because the hook runs as that user.
+
+### Limits
+
+- **No ssh master, no remote herdr pots.** `status` tells you when this is why.
+- **Remote herdr pots jump the remote pane only.** They have no OSC nonce, so
+  Kettle knows which pane to focus but not which local window, if any, is
+  displaying it.
+- **An agent running detached on the remote** (inside remote tmux, or on
+  someone else's display) gets an informational pot with no jump target.
+
 ## Settings
 
 Set these on the widget's entry in `~/.config/omarchy/shell.json`:
