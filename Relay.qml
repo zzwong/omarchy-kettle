@@ -43,6 +43,15 @@ QtObject {
 
   signal rejected(string reason)
 
+  // Token filenames are the host registry — the same list the relay
+  // authenticates against drives which hosts we stream herdr from.
+  readonly property var hostList: {
+    var out = []
+    for (var t in tokens) if (tokens[t]) out.push(tokens[t])
+    out.sort()
+    return out
+  }
+
   // ---- tokens -------------------------------------------------------------
   // Read lazily and re-read on a miss, which sidesteps directory-watch
   // semantics entirely: a newly added host authenticates on its first event.

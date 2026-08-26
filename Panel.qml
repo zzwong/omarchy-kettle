@@ -96,6 +96,17 @@ Panel {
       return
     }
 
+    if (pot.source === "rherdr") {
+      // Rides the user's existing ControlMaster (~48ms). ControlMaster=no so
+      // we can never become the master a reload would then kill.
+      Quickshell.execDetached([
+        "ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
+        "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
+        pot.host, "herdr agent focus " + pot.paneId
+      ])
+      return
+    }
+
     if (!pot.paneId) return
     Quickshell.execDetached(["herdr", "agent", "focus", pot.paneId])
     raiser.running = false
@@ -137,6 +148,22 @@ Panel {
   Relay {
     id: relay
     store: store
+  }
+
+  // One streaming channel per configured host. The token files double as the
+  // host registry, so adding or revoking a host is a file operation.
+  Repeater {
+    id: remoteHosts
+    model: relay.hostList
+    delegate: RemoteHerdrPoller {
+      required property string modelData
+      host: modelData
+      store: store
+      pluginDir: root.pluginDir
+      Component.onCompleted: start()
+      onAgentsChanged: function(agents) { store.reconcileRemote(host, agents) }
+      onDown: store.dropRemoteHost(host)
+    }
   }
 
   PotStore {
@@ -223,18 +250,23 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.showCount && !vertical && store.liveCount > 0
-      ? root.stateGlyph(store.severity) + " " + store.liveCount
-      : root.stateGlyph(store.severity)
-    slotSize: Style.bar.iconSlot * (root.showCount && !vertical && store.liveCount > 0 ? 2 : 1)
+    // Drawn, not glyphed — see KettleMark for why the coffee glyph failed.
+    // The count still rides as text so it keeps the bar's font metrics.
+    text: root.showCount && !vertical && store.liveCount > 0 ? " " + store.liveCount : ""
+    iconComponent: Component {
+      KettleMark {
+        potState: store.severity
+        stroke: root.severityColor(store.severity)
+        opacity: root.hasAnything ? 1.0 : 0.45
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+      }
+    }
+    slotSize: Style.bar.iconSlot * (root.showCount && !vertical && store.liveCount > 0 ? 1.6 : 1)
     foreground: root.severityColor(store.severity)
-    opacity: root.hasAnything ? 1.0 : 0.45
     tooltipText: root.hasAnything
       ? (store.liveCount + " cooking" + (store.pots.length > store.liveCount
           ? ", " + (store.pots.length - store.liveCount) + " waiting" : ""))
       : (poller.serverDown ? "Kettle — no herdr session" : "Kettle — nothing cooking")
-
-    Behavior on opacity { NumberAnimation { duration: 180 } }
 
     onPressed: function(b) { root.toggle() }
   }

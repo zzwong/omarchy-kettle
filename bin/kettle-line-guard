@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Bound the line length of a remote stream before QML ever sees it.
+
+Quickshell's SplitParser appends unconditionally while it hunts for a
+delimiter, with no cap — so a remote that emits megabytes without a newline
+would grow the shell's heap without limit. This sits in the pipe and exits on
+violation, which kills the pipeline, fires onExited, and lets the normal
+backoff respawn.
+
+Line-oriented shell tools (sed, cut, grep --line-buffered) are not substitutes:
+they buffer the partial line themselves, which is the same bug in a different
+heap.
+"""
+
+import sys
+
+MAX_LINE = 64 * 1024  # payloads are ~2KB of base64; this is generous
+CHUNK = 8192
+
+
+def main() -> int:
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+    pending = bytearray()
+
+    while True:
+        try:
+            chunk = stdin.read1(CHUNK)
+        except (KeyboardInterrupt, OSError):
+            return 0
+        if not chunk:
+            return 0                      # upstream closed: normal exit
+
+        pending += chunk
+        while True:
+            nl = pending.find(b"\n")
+            if nl == -1:
+                break
+            line, pending = pending[:nl], pending[nl + 1:]
+            try:
+                stdout.write(bytes(line) + b"\n")
+                stdout.flush()
+            except BrokenPipeError:
+                return 0                  # consumer went away
+            except OSError:
+                return 0
+
+        if len(pending) > MAX_LINE:
+            # Refuse to accumulate. Dying is the correct response: the
+            # supervisor sees the exit and reconnects with a clean buffer.
+            sys.stderr.write(
+                f"kettle-line-guard: line exceeded {MAX_LINE} bytes, closing stream\n")
+            return 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(0)

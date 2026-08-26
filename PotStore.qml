@@ -18,6 +18,7 @@ QtObject {
   readonly property var pots: {
     var out = herdrPots.slice()
     for (var k in hookPots) if (hookPots[k]) out.push(hookPots[k])
+    for (var r in remotePots) if (remotePots[r]) out.push(remotePots[r])
     return out
   }
 
@@ -115,6 +116,67 @@ QtObject {
     }
 
     herdrPots = next
+  }
+
+  // ---- remote herdr source -------------------------------------------------
+  // Same shape as local herdr, keyed by host so two machines cannot collide.
+  // Kept apart from herdrPots because each host reconciles on its own channel.
+  property var remotePots: ({})
+
+  function reconcileRemote(host, agents) {
+    var now = Date.now()
+    var next = Object.assign({}, remotePots)
+    var seen = {}
+
+    for (var a = 0; a < agents.length; a++) {
+      var ag = agents[a]
+      var state = mapStatus(String(ag.agent_status || ""))
+      if (state === "") continue
+
+      var key = "rherdr:" + host + ":" + ag.pane_id
+      seen[key] = true
+      var was = next[key]
+      var seq = Number(ag.state_change_seq)
+      if (!isFinite(seq)) seq = -1
+      var changed = !was || was.state !== state || (seq >= 0 && was.seq !== seq)
+
+      var runStart = (was && was.runStart) ? was.runStart : now
+      if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
+      var ranMs = (was && was.ranMs) ? was.ranMs : 0
+      if ((state === "ready" || state === "burnt") && was && was.state === "simmering")
+        ranMs = now - was.runStart
+
+      var pot = {
+        key: key,
+        source: "rherdr",
+        label: agentLabel(ag.agent),
+        project: basename(String(ag.cwd || "")),
+        state: state,
+        since: (was && !changed) ? was.since : now,
+        runStart: runStart,
+        ranMs: ranMs,
+        seq: seq,
+        paneId: String(ag.pane_id),
+        host: host,
+        windowAddr: "",
+        agentKind: String(ag.agent || ""),
+        model: ""
+      }
+      next[key] = pot
+      if (!was || was.state !== state) root.potChanged(pot, was ? was.state : "")
+    }
+
+    // Anything this host no longer reports is gone.
+    for (var k in next)
+      if (k.indexOf("rherdr:" + host + ":") === 0 && !seen[k]) delete next[k]
+
+    remotePots = next
+  }
+
+  function dropRemoteHost(host) {
+    var next = Object.assign({}, remotePots)
+    for (var k in next) if (k.indexOf("rherdr:" + host + ":") === 0) delete next[k]
+    remotePots = next
   }
 
   // ---- agent-hook source ---------------------------------------------------
