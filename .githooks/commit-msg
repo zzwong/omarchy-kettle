@@ -1,0 +1,43 @@
+#!/bin/bash
+# House-style commit lint. Activate locally with:
+#   git config core.hooksPath .githooks
+# CI runs the same script over every pushed commit, so the hook is a
+# convenience, not the boundary.
+#
+# The style being enforced is the one the log already has: a capitalized,
+# imperative subject in plain English — no feat:/fix: prefixes — and a body
+# that explains why, wrapped like prose.
+set -uo pipefail
+
+msg_file=${1:?usage: commit-msg <file>}
+
+subject=$(sed -n '1p' "$msg_file")
+fail() { echo "commit-msg: $1" >&2; echo "  subject: $subject" >&2; exit 1; }
+
+# Merges, reverts and autosquash commits have generated subjects.
+case $subject in
+  Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
+esac
+
+[[ -n $subject ]] || fail "empty subject line"
+(( ${#subject} <= 72 )) || fail "subject exceeds 72 characters (${#subject})"
+[[ $subject =~ ^[A-Z] ]] || fail "subject must start with a capital letter"
+[[ $subject != *. ]] || fail "subject must not end with a period"
+[[ ! $subject =~ ^[a-z]+(\([^\)]*\))?\!?: ]] \
+  || fail "no conventional-commit prefixes — write plain English (see CONTRIBUTING.md)"
+
+# A body must be separated from the subject by one blank line, and wrap at 80
+# unless a line is unbreakable (URLs, long paths).
+second=$(sed -n '2p' "$msg_file")
+[[ -z $second ]] || fail "second line must be blank"
+
+while IFS= read -r line; do
+  [[ $line == \#* ]] && continue
+  if (( ${#line} > 80 )) && [[ $line != *://* && $line != *"/"*"/"*"/"* ]]; then
+    echo "commit-msg: body line exceeds 80 characters:" >&2
+    echo "  $line" >&2
+    exit 1
+  fi
+done < <(tail -n +3 "$msg_file")
+
+exit 0
