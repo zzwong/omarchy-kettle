@@ -77,7 +77,21 @@ case ${agent,,} in
   *claude*) agent="claude" ;;
 esac
 
+# Remote mode is switched on by the presence of a relay config, which only
+# `kettle-remote install` writes. On a remote host there is no omarchy-shell
+# and no hyprctl: the local relay resolves the window and computes focus, and
+# this side only announces itself and posts the event.
+RELAY_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/kettle/relay.conf"
+REMOTE=0
+if [[ ! -x $(command -v omarchy-shell 2>/dev/null || echo /nonexistent) && -f $RELAY_CONF ]]; then
+  REMOTE=1
+  relay_port=$(sed -n 's/^port=//p' "$RELAY_CONF" | head -1)
+  relay_token=$(sed -n 's/^token=//p' "$RELAY_CONF" | head -1)
+  [[ -z ${relay_port:-} || -z ${relay_token:-} ]] && exit 0
+fi
+
 addr_file="$STATE_DIR/$sid"
+resolved_marker="$STATE_DIR/$sid.resolved"
 
 # ---- window identity -------------------------------------------------------
 # Resolved once per session and cached; a Hyprland window address is stable for
@@ -130,6 +144,17 @@ for c in cs:
   fi
 }
 
+if (( REMOTE )); then
+  # No hyprctl here — the title is the only thing that crosses ssh, and the
+  # relay watches for it on the other side.
+  if [[ ! -f $resolved_marker && $state != "gone" ]]; then
+    mkdir -p "$STATE_DIR"
+    tty=$(kettle_tty) && printf '\033]2;kettle:%s\007' "$sid" > "$tty" 2>/dev/null
+  fi
+  [[ $state == "gone" ]] && rm -f "$resolved_marker"
+  addr=""; focused=false
+else
+
 # Resolve lazily rather than only at SessionStart: a session that was already
 # running when these hooks were installed never saw a SessionStart, and would
 # otherwise never learn its window. Any event will do — the cost is one title
@@ -162,6 +187,7 @@ except Exception: pass
 fi
 
 [[ $state == "gone" ]] && rm -f "$addr_file"
+fi
 
 # ---- session metadata ------------------------------------------------------
 # Claude's hook payload has no model or token fields, but it does point at the
@@ -225,6 +251,31 @@ print(base64.b64encode(json.dumps({
 ' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" 2>/dev/null)
 
 [[ -z $b64 ]] && exit 0
+
+if (( REMOTE )); then
+  # The relay replies `ok` once it has resolved this session's window from the
+  # nonce; after that we stop repainting the title. `need-nonce` means the
+  # window went away (a reattached multiplexer, say) and we must announce again.
+  ( python3 -c '
+import socket, sys, os
+port, token, b64, marker = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    s = socket.create_connection(("127.0.0.1", int(port)), 1)
+    s.settimeout(2)
+    s.sendall(f"v1 {token} {b64}\n".encode())
+    ack = s.recv(64).decode().strip()
+    s.close()
+except Exception:
+    sys.exit(0)          # relay down: drop the event, never stall the agent
+if ack == "ok":
+    try: open(marker, "w").close()
+    except Exception: pass
+elif ack == "need-nonce":
+    try: os.unlink(marker)
+    except Exception: pass
+' "$relay_port" "$relay_token" "$b64" "$resolved_marker" >/dev/null 2>&1 & ) &
+  exit 0
+fi
 
 # Fire and forget: a hook must never make the agent wait, and must never fail
 # the agent if the shell is not running.

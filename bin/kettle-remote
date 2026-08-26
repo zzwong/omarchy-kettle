@@ -1,0 +1,230 @@
+#!/bin/bash
+# Kettle remote setup — make agent sessions on an ssh host appear on your bar.
+#
+#   kettle-remote install <host>     push the hook, mint a token, wire hooks
+#   kettle-remote test <host>        send a synthetic event and report the ack
+#   kettle-remote status [<host>]    what is configured and whether it is live
+#   kettle-remote uninstall <host>   remove the remote side and revoke the token
+#
+# How it works: ssh forwards a port on the remote loopback straight into the
+# unix socket the Omarchy shell already listens on, so there is no daemon and
+# no systemd unit on either end. The remote hook posts events to that port; the
+# local relay authenticates them, resolves the window, and shows the pot.
+#
+# Window identity crosses ssh for free: OSC 2 sets the terminal title, the
+# terminal republishes it to the compositor, and the relay matches it. That is
+# the only escape sequence with an externally visible side effect.
+
+set -uo pipefail
+
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/kettle"
+TOKENS="$CFG/tokens"
+SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kettle/kettle.sock"
+HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kettle-agent-hook"
+PORT_DEFAULT=47761
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+port_for() { sed -n 's/^port=//p' "$CFG/relay.conf" 2>/dev/null | head -1 || true; }
+
+ensure_local() {
+  mkdir -p "$CFG" "$TOKENS"; chmod 700 "$CFG" "$TOKENS"
+  [[ -f $CFG/relay.conf ]] || printf 'port=%s\n' "$PORT_DEFAULT" > "$CFG/relay.conf"
+}
+
+# ---------------------------------------------------------------- install
+cmd_install() {
+  local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote install <host>"
+  [[ -x $HOOK ]] || die "hook not found at $HOOK"
+  ensure_local
+  local port; port=$(port_for); port=${port:-$PORT_DEFAULT}
+
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" true 2>/dev/null \
+    || die "cannot reach $host over ssh with key auth"
+
+  # The token both authenticates the host and names it: the relay attaches the
+  # matching FILENAME as the pot's origin, so a payload can never claim to be
+  # from somewhere it is not.
+  local token
+  token=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
+  printf '%s' "$token" > "$TOKENS/$host"
+  chmod 600 "$TOKENS/$host"
+
+  echo "Installing on $host…"
+  # The hook travels base64-encoded inside the script rather than on a second
+  # stdin: a remote `bash -s` only has one, and the script is already using it.
+  local hook_b64; hook_b64=$(base64 -w0 < "$HOOK")
+  ssh -o BatchMode=yes "$host" 'bash -s' -- "$port" "$token" "$hook_b64" <<'REMOTE' 2>&1 | sed 's/^/  /'
+set -uo pipefail
+PORT=$1; TOKEN=$2; HOOK_B64=$3
+mkdir -p ~/.local/bin ~/.config/kettle ~/.local/state/kettle/sessions
+chmod 700 ~/.config/kettle
+cat > ~/.config/kettle/relay.conf <<EOF
+port=$PORT
+token=$TOKEN
+EOF
+chmod 600 ~/.config/kettle/relay.conf
+printf '%s' "$HOOK_B64" | base64 -d > /tmp/kettle-hook-in \
+  && install -m 755 /tmp/kettle-hook-in ~/.local/bin/kettle-agent-hook \
+  && rm -f /tmp/kettle-hook-in
+python3 - <<'PY'
+import json, os
+hook = os.path.expanduser("~/.local/bin/kettle-agent-hook")
+targets = [
+    (os.path.expanduser("~/.claude/settings.json"),
+     ["SessionStart","UserPromptSubmit","Notification","Stop","SessionEnd"]),
+    (os.path.expanduser("~/.codex/hooks.json"),
+     ["SessionStart","UserPromptSubmit","PermissionRequest","Stop","SessionEnd"]),
+]
+for path, events in targets:
+    doc = {}
+    if os.path.exists(path):
+        try:
+            doc = json.load(open(path))
+        except Exception:
+            print(f"  ! {path} is not valid JSON; skipped")
+            continue
+        # Keep a copy before touching a file we did not write.
+        try:
+            with open(path + ".kettle-bak", "w") as b: json.dump(doc, b, indent=2)
+        except Exception: pass
+    hooks = doc.setdefault("hooks", {})
+    changed = False
+    for ev in events:
+        group = hooks.setdefault(ev, [])
+        if any(h.get("command") == hook for e in group for h in e.get("hooks", [])):
+            continue
+        group.append({"hooks": [{"type": "command", "command": hook,
+                                 "async": True, "timeout": 10 if ev == "SessionStart" else 5}]})
+        changed = True
+    if changed:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump(doc, open(path, "w"), indent=2)
+        print(f"  wrote {path}")
+    else:
+        print(f"  {path} already up to date")
+PY
+echo "  hook at ~/.local/bin/kettle-agent-hook"
+REMOTE
+
+  cat <<EOF
+
+Add this to ~/.ssh/config so the forward exists whenever you connect:
+
+  Host $host
+      RemoteForward 127.0.0.1:$port $SOCK
+      ControlMaster auto
+      ControlPath ~/.ssh/cm-%r@%h:%p
+      ControlPersist 10m
+
+ControlMaster matters twice over: jumping to a remote pane reuses the
+connection you already have instead of opening one (~48ms rather than ~100ms),
+and it keeps the forward alive when the session that created it exits.
+
+Then: kettle-remote test $host
+EOF
+}
+
+# ---------------------------------------------------------------- test
+cmd_test() {
+  local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote test <host>"
+  [[ -f $TOKENS/$host ]] || die "no token for $host — run: kettle-remote install $host"
+  [[ -S $SOCK ]] || die "no relay socket at $SOCK — is the Omarchy shell running with Kettle enabled?"
+  local port token; port=$(port_for); port=${port:-$PORT_DEFAULT}
+  token=$(<"$TOKENS/$host")
+
+  local b64
+  b64=$(python3 -c '
+import base64, json, sys
+print(base64.b64encode(json.dumps({
+  "agent": "claude", "id": "kettle-remote-test", "state": "working",
+  "cwd": "/kettle/selftest", "message": "", "model": "test",
+}).encode()).decode())')
+
+  echo "Sending a test event from $host…"
+  local ack
+  ack=$(ssh -o BatchMode=yes -R "127.0.0.1:$port:$SOCK" "$host" \
+    "python3 -c \"
+import socket
+s=socket.create_connection(('127.0.0.1',$port),3); s.settimeout(4)
+s.sendall(b'v1 $token $b64\\n')
+print(s.recv(64).decode().strip())
+\"" 2>&1 | tail -1)
+
+  case "$ack" in
+    ok|no-window|need-nonce)
+      echo "  relay replied: $ack"
+      echo "  working — a pot named kettle/selftest should be on your bar."
+      ;;
+    denied) echo "  relay replied: denied — token mismatch. Re-run install." ;;
+    *)      echo "  no usable reply: $ack" ;;
+  esac
+
+  # Do not leave the self-test pot behind.
+  local goneb64
+  goneb64=$(python3 -c '
+import base64, json
+print(base64.b64encode(json.dumps({
+  "agent": "claude", "id": "kettle-remote-test", "state": "gone", "cwd": "/",
+}).encode()).decode())')
+  python3 -c "
+import socket
+try:
+    s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(3); s.connect('$SOCK')
+    s.sendall(b'v1 $token $goneb64\n'); s.recv(64)
+except Exception: pass" 2>/dev/null
+}
+
+# ---------------------------------------------------------------- status
+cmd_status() {
+  local port; port=$(port_for); port=${port:-$PORT_DEFAULT}
+  printf 'relay socket : %s\n' "$([[ -S $SOCK ]] && echo "listening  $SOCK" || echo "ABSENT — shell not running with Kettle")"
+  printf 'forward port : %s\n' "$port"
+  printf 'hosts        : %s\n' "$(ls "$TOKENS" 2>/dev/null | tr '\n' ' ' || echo none)"
+  local host=${1:-}
+  [[ -z $host ]] && return 0
+  printf '\n%s:\n' "$host"
+  printf '  token      : %s\n' "$([[ -f $TOKENS/$host ]] && echo present || echo MISSING)"
+  printf '  remote conf: %s\n' \
+    "$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'test -f ~/.config/kettle/relay.conf && echo present || echo MISSING' 2>/dev/null || echo unreachable)"
+  printf '  remote hook: %s\n' \
+    "$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'test -x ~/.local/bin/kettle-agent-hook && echo present || echo MISSING' 2>/dev/null || echo unreachable)"
+}
+
+# ---------------------------------------------------------------- uninstall
+cmd_uninstall() {
+  local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote uninstall <host>"
+  # Delete the token first: that alone revokes the host, even if the remote is
+  # unreachable and the rest of the cleanup cannot run.
+  rm -f "$TOKENS/$host" && echo "revoked token for $host"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" 'bash -s' <<'REMOTE' 2>&1 | sed 's/^/  /' || echo "  (remote unreachable — token is revoked regardless)"
+rm -f ~/.local/bin/kettle-agent-hook ~/.config/kettle/relay.conf
+rm -rf ~/.local/state/kettle
+python3 - <<'PY'
+import json, os
+for path in (os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.codex/hooks.json")):
+    if not os.path.exists(path): continue
+    try: doc = json.load(open(path))
+    except Exception: continue
+    hooks = doc.get("hooks", {})
+    for ev in list(hooks):
+        kept = [e for e in hooks[ev]
+                if not any("kettle-agent-hook" in h.get("command","") for h in e.get("hooks", []))]
+        if kept: hooks[ev] = kept
+        else: del hooks[ev]
+    if not hooks: doc.pop("hooks", None)
+    json.dump(doc, open(path, "w"), indent=2)
+    print(f"cleaned {path}")
+PY
+echo "remote side removed"
+REMOTE
+  echo "Remove the RemoteForward block for $host from ~/.ssh/config by hand."
+}
+
+case "${1:-}" in
+  install)   shift; cmd_install "$@" ;;
+  test)      shift; cmd_test "$@" ;;
+  status)    shift; cmd_status "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  *) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 2 ;;
+esac
