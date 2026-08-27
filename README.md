@@ -228,6 +228,13 @@ o.bind("SUPER + SHIFT + GRAVE", "Kettle Stage", "omarchy-shell kettle stage")
 It opens on a carousel of the selected pot; `↑` zooms out to a grid of every
 pot, `↓` zooms back in (or falls back out of a grid edge into the carousel).
 
+![The Stage grid](docs/stage.png)
+
+Each slab previews its own session. A hook pot with a resolved window is a
+live screencopy of that window; a herdr pane is a text read, because a
+screencopy would show whichever tab is visible in the shared window. A pot
+with neither is a metadata card.
+
 ## Remote hosts over ssh
 
 Agent sessions on another machine appear on your bar, tagged with the host.
