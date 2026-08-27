@@ -732,6 +732,13 @@ Item {
           // every row.
           anchors.leftMargin: slab.skew + Style.space(10)
           anchors.rightMargin: slab.skew + Style.space(10)
+          // The chip floats over the top-right corner. A screencopy can live
+          // under it — a terminal's right edge is ragged — but this is an
+          // unwrapped grid whose lines run the full width, so the chip would
+          // sit on real characters. Text is tail-anchored, so giving up a row
+          // at the top costs nothing that the reader wanted.
+          anchors.topMargin: Style.space(10)
+            + ((slab.chipAlways || slab.selected) ? chip.height + Style.space(6) : 0)
           contentWidth: Math.max(width, bodyText.implicitWidth)
           contentHeight: Math.max(height, bodyText.implicitHeight)
           clip: true
