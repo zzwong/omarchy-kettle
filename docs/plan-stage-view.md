@@ -31,11 +31,12 @@ truthful per pane.
 
 ## UI
 
-- Carousel-only in v1 (no grid): pots ordered as `PotStore.pots` already
-  orders them (local first, then hosts alphabetically). Selected slab
-  expands; others are skewed slices — vendor `WsSlab` from Stage, strip the
-  workspace/monitor mapping, add a `contentComponent` slot (screencopy |
-  text | card).
+- Carousel plus grid, same interaction model as Stage (Up zooms out to the
+  grid, Down/edge falls back to the carousel): pots ordered as
+  `PotStore.pots` already orders them (local first, then hosts
+  alphabetically). Selected slab expands; others are skewed slices — vendor
+  `WsSlab` from Stage, strip the workspace/monitor mapping, add a
+  `contentComponent` slot (screencopy | text | card).
 - Chip on each slab: agent glyph + state tint, reusing KettleMark's
   glyph-first state rules (colour is secondary; `needs-attention` pulses).
 - Label bar (Stage's pill row): pot title (`terminal_title_stripped` or hook

@@ -101,3 +101,24 @@ function staleLabel(ageMs, intervalMs) {
   if (ageMs <= intervalMs) return ""
   return "as of " + Math.floor(ageMs / 1000) + "s ago"
 }
+
+// ---- grid layout (StageView.qml's grid view, vendored from Stage.qml's
+// `gridFit` property at commit 38ae63f0447026285d36c9426c7e93dffc84b665) --
+// Brute-forces the column count (1..count) that maximizes card width once
+// both constraints apply: available width split into `c` columns, and
+// available height split into `ceil(count/c)` rows scaled back up by
+// `aspect`. Lifted out of the QML binding (which read `panel`/`Style`
+// directly, same as Stage's own property) into a pure function so the
+// search itself runs through the qs test harness like resolve() and
+// seqRereads() above, instead of only being checkable by eye in the shell.
+function gridFit(count, availW, availH, aspect, gap) {
+  var n = Math.max(1, count || 0)
+  var best = { cols: 1, w: 0 }
+  for (var c = 1; c <= n; c++) {
+    var r = Math.ceil(n / c)
+    var w = Math.min((availW - gap * (c - 1)) / c,
+                     ((availH - gap * (r - 1)) / r) * aspect)
+    if (w > best.w) best = { cols: c, w: w }
+  }
+  return best
+}

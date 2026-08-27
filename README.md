@@ -225,6 +225,9 @@ Stage — a live preview deck of every pot — binds separately:
 o.bind("SUPER + SHIFT + GRAVE", "Kettle Stage", "omarchy-shell kettle stage")
 ```
 
+It opens on a carousel of the selected pot; `↑` zooms out to a grid of every
+pot, `↓` zooms back in (or falls back out of a grid edge into the carousel).
+
 ## Remote hosts over ssh
 
 Agent sessions on another machine appear on your bar, tagged with the host.

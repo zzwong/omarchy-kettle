@@ -12,16 +12,21 @@ import "PreviewSource.js" as PreviewSource
 // preview slab, click or Enter to jump. This is the `overlay` entry point
 // (see manifest.json); Panel.qml is the separate `bar-widget` entry point.
 //
-// The skewed-slice carousel (PotSlab below, the carousel Loader, the
-// open/close/keyboard contract) is vendored from omarchy-stage's Stage.qml
-// at commit 38ae63f0447026285d36c9426c7e93dffc84b665 — WsSlab, the picker
-// carousel, kbdPriority and the deliberate-hover MouseArea are near-verbatim
-// ports with the Hyprland-workspace/monitor mapping stripped and a pot's
-// resolved preview (screencopy | text | card, see PreviewSource.js) dropped
-// in where Stage drew a repeater of workspace toplevels. Grid/cards styles
-// and pane-mode zoom are Stage-only and were not ported (plan is
-// carousel-only in v1). Drift from Stage is accepted; this header is the
-// provenance note docs/plan-stage-view.md asks for.
+// The skewed-slice carousel and the picker grid (PotSlab below, the
+// carousel and grid Loaders, the open/close/keyboard/zoom contract) are
+// vendored from omarchy-stage's Stage.qml at commit
+// 38ae63f0447026285d36c9426c7e93dffc84b665 — WsSlab, the picker carousel,
+// the picker grid, kbdPriority, the deliberate-hover MouseArea, and the
+// Up/Down zoom between the two views are near-verbatim ports with the
+// Hyprland-workspace/monitor mapping stripped and a pot's resolved preview
+// (screencopy | text | card, see PreviewSource.js) dropped in where Stage
+// drew a repeater of workspace toplevels. Stage's "cards" style and its
+// pane-mode zoom (a third level inside the carousel's expanded preview,
+// for picking a window within a workspace) are Stage-only and were not
+// ported — pots have no per-window layout for pane mode to zoom into, and
+// the plan defers acting on a pot from the overlay. Drift from Stage is
+// accepted; this header is the provenance note docs/plan-stage-view.md
+// asks for.
 //
 // Pot state (hook, local herdr, and remote herdr pots alike) comes from
 // KettleService.qml, injected as `service` by the shell's panel loader
@@ -59,6 +64,25 @@ Item {
   // hover-select would otherwise snap selection back right after the
   // keyboard moved it away).
   property bool kbdPriority: false
+
+  // "carousel" is the zoomed-in slice view; "grid" lays every pot out at
+  // once. Up zooms out, Down zooms back in (or falls back out of a grid
+  // edge) — the same two-view zoom as Stage's "auto" view, minus the
+  // settings surface that lets Stage lock to one view (plan defers
+  // settings, so kettle always behaves as "auto").
+  property string viewMode: "carousel"
+
+  // Grid-view layout, shared by the grid Loader below and the key handler's
+  // spatial navigation: the column count that maximizes card size. The
+  // search itself is PreviewSource.gridFit, ported from Stage's `gridFit`
+  // property (Stage.qml:62-73) into a pure function so it runs through the
+  // qs test harness the same way resolve()/seqRereads() do, instead of only
+  // being checkable by eye.
+  readonly property real gridGap: Style.space(18)
+  readonly property var gridFit: PreviewSource.gridFit(
+    root.slotCount, panel.width * 0.88, panel.height * 0.74,
+    root.previewAspect, root.gridGap)
+  readonly property int gridCols: Math.max(1, gridFit.cols)
 
   // Shear slope shared by every parallelogram (28px over a 519px reference
   // height), so skewed edges stay parallel at any slab size. Copied from
@@ -372,6 +396,7 @@ Item {
     Hyprland.refreshToplevels()
     root.kbdPriority = false
     root.selectedIndex = store.pots.length > 0 ? 0 : -1
+    root.viewMode = "carousel"
     root.opened = true
     root.pendingBatchRead = true
     root.seqWatermark = ({})
@@ -791,8 +816,35 @@ Item {
       Keys.priority: Keys.BeforeItem
 
       Keys.onPressed: function(event) {
+        var grid = root.viewMode === "grid"
+
         if (event.key === Qt.Key_Escape) {
           root.dismiss()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+          // Zoom axis (Stage.qml's Up/Down handler, minus the viewPref
+          // lock check — kettle has no setting to disable this).
+          root.kbdPriority = true
+          if (grid) {
+            // Move up a row; past the top, fall back into the carousel.
+            var up = root.selectedIndex - root.gridCols
+            if (up >= 0) root.selectedIndex = up
+            else root.viewMode = "carousel"
+          } else {
+            root.viewMode = "grid"
+          }
+          event.accepted = true
+        } else if (event.key === Qt.Key_Down) {
+          root.kbdPriority = true
+          if (grid) {
+            // Move down a row; past the bottom, fall back into the
+            // carousel. Carousel-Down is a no-op: Stage uses it to zoom
+            // into pane mode, which pots have no equivalent of (see file
+            // header).
+            var down = root.selectedIndex + root.gridCols
+            if (down < root.slotCount) root.selectedIndex = down
+            else root.viewMode = "carousel"
+          }
           event.accepted = true
         } else if (event.key === Qt.Key_Left
                    || (event.key === Qt.Key_Tab && event.modifiers & Qt.ShiftModifier)
@@ -840,7 +892,7 @@ Item {
 
     // ---- carousel: skewed slice picker, selected pot expands ----------
     Loader {
-      active: root.opened && store.pots.length > 0
+      active: root.opened && root.viewMode === "carousel" && store.pots.length > 0
       anchors.centerIn: parent
 
       sourceComponent: Item {
@@ -892,6 +944,69 @@ Item {
 
             onPressed: root.selectedIndex = index
             onActivated: root.jump(modelData)
+          }
+        }
+      }
+    }
+
+    // ---- grid: every pot laid out responsively -------------------------
+    // Preview budget (docs/plan-stage-view.md "Refresh budget"): showing
+    // every pot at once here needs no new reads. Local herdr text was
+    // already read for every pot in one batch on open() (see "local herdr
+    // text reads" above) and keeps getting re-read on seq bumps regardless
+    // of which view is on screen — the grid doesn't add pots to that read
+    // set, just displays ones already covered. Remote (rherdr) pots stay
+    // metadata cards here exactly like in the carousel:
+    // PreviewSource.resolve() only upgrades a remote pot to a text preview
+    // when it is *the* selectedPot, and the grid shares one
+    // root.selectedIndex with the carousel (hover and arrow keys move the
+    // same property carousel navigation does) — so that gate, and the
+    // selected-pot-only read timers above, are untouched by this view
+    // existing. Screencopy slabs (hook pots) may all be live at once while
+    // the grid is open, same as Stage's own grid (Stage.qml:700-742) —
+    // captureSource is gated on `root.opened`, not on viewMode, so this is
+    // not a new cost class, just more slabs paying the cost that already
+    // existed.
+    Loader {
+      active: root.opened && root.viewMode === "grid" && store.pots.length > 0
+      anchors.fill: parent
+
+      sourceComponent: Item {
+        id: gridView
+
+        readonly property real cardW: root.gridFit.w
+        readonly property real cardH: cardW / root.previewAspect
+
+        Grid {
+          anchors.centerIn: parent
+          columns: root.gridCols
+          columnSpacing: root.gridGap
+          rowSpacing: root.gridGap
+
+          Repeater {
+            model: store.pots
+
+            delegate: PotSlab {
+              id: gridItem
+              required property var modelData
+              required property int index
+
+              pot: modelData
+              width: gridView.cardW
+              height: gridView.cardH
+              selected: index === root.selectedIndex
+              skew: gridView.cardH * root.skewSlope
+              chipAlways: true
+              hoverSelect: true
+              dimOpacity: 0.22
+
+              scale: selected ? 1.03 : 1.0
+              z: selected ? 2 : 1
+              Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+              onPressed: root.selectedIndex = index
+              onActivated: root.jump(modelData)
+            }
           }
         }
       }

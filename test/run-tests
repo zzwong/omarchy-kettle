@@ -815,6 +815,24 @@ QtObject {
       console.log("STALE:" + staleCases[st][0] + ":" + JSON.stringify(lbl))
     }
 
+    // gridFit(): the grid view's column-count search (StageView.qml's
+    // gridFit property), vendored from Stage.qml's own `gridFit`. Cases
+    // below use gap:0 except one, and round numbers throughout, so the
+    // winning cols/w can be checked by hand instead of by re-running the
+    // search in bash/python.
+    var gridCases = [
+      ["single-item-uses-one-col", 1, 800, 800, 1, 0],
+      ["more-cols-when-wide", 4, 1000, 500, 1, 0],
+      ["one-col-when-narrow", 3, 200, 900, 1, 0],
+      ["aspect-favors-fewer-cols", 2, 1000, 1000, 2, 0],
+      ["gap-reduces-available-space", 2, 104, 100, 1, 10]
+    ]
+    for (var g = 0; g < gridCases.length; g++) {
+      var gc = gridCases[g]
+      var gf = PreviewSource.gridFit(gc[1], gc[2], gc[3], gc[4], gc[5])
+      console.log("GRID:" + gc[0] + ":" + JSON.stringify(gf))
+    }
+
     killer.running = true
   }
   // qs has no clean single-shot exit signal (Qt.exit() finds no receiver in
@@ -886,6 +904,29 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "read past the interval says how old it is" "$(staleresult stale-past-interval)" '"as of 7s ago"'
   is "negative age has no stale label" "$(staleresult negative-age)" '""'
   is "non-numeric age has no stale label" "$(staleresult non-numeric-age)" '""'
+
+  # gridFit(): the grid view's column-count search (plan's grid section).
+  gridresult() { printf '%s\n' "$out" | grep -o "GRID:$1:.*" | head -1 | sed "s/^GRID:$1://"; }
+  colsof() { python3 -c "
+import json,sys
+try: print(json.loads(sys.argv[1]).get('cols',''))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" 2>/dev/null; }
+  wof() { python3 -c "
+import json,sys
+try: print(json.loads(sys.argv[1]).get('w',''))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" 2>/dev/null; }
+
+  is "one pot uses one column" "$(colsof "$(gridresult single-item-uses-one-col)")" "1"
+  is "one pot fills the available square" "$(wof "$(gridresult single-item-uses-one-col)")" "800"
+  is "wide area picks more columns" "$(colsof "$(gridresult more-cols-when-wide)")" "2"
+  is "wide-area card width" "$(wof "$(gridresult more-cols-when-wide)")" "250"
+  is "narrow area picks one column" "$(colsof "$(gridresult one-col-when-narrow)")" "1"
+  is "narrow-area card width" "$(wof "$(gridresult one-col-when-narrow)")" "200"
+  is "wide aspect favors fewer columns" "$(colsof "$(gridresult aspect-favors-fewer-cols)")" "1"
+  is "wide-aspect card width" "$(wof "$(gridresult aspect-favors-fewer-cols)")" "1000"
+  is "gap is subtracted from available space" "$(wof "$(gridresult gap-reduces-available-space)")" "47"
 }
 
 # ------------------------------------------------------------ coherence tests
