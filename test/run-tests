@@ -833,6 +833,19 @@ QtObject {
       console.log("GRID:" + gc[0] + ":" + JSON.stringify(gf))
     }
 
+    // fitColumns(): the text preview's unwrapped grid width. Trailing pad
+    // must not count — herdr rows arrive space-padded to pane width.
+    var colCases = [
+      ["widest-line-wins", "ab\nabcdef\nabc"],
+      ["trailing-pad-ignored", "abc      \nab"],
+      ["empty-text-one-col", ""],
+      ["blank-lines-one-col", "\n\n"]
+    ]
+    for (var fc = 0; fc < colCases.length; fc++) {
+      var cols = PreviewSource.fitColumns(colCases[fc][1])
+      console.log("COLS:" + colCases[fc][0] + ":" + JSON.stringify(cols))
+    }
+
     killer.running = true
   }
   // qs has no clean single-shot exit signal (Qt.exit() finds no receiver in
@@ -927,6 +940,14 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "wide aspect favors fewer columns" "$(colsof "$(gridresult aspect-favors-fewer-cols)")" "1"
   is "wide-aspect card width" "$(wof "$(gridresult aspect-favors-fewer-cols)")" "1000"
   is "gap is subtracted from available space" "$(wof "$(gridresult gap-reduces-available-space)")" "47"
+
+  # fitColumns(): the text preview's unwrapped grid width.
+  colresult() { printf '%s\n' "$out" | grep -o "COLS:$1:.*" | head -1 | sed "s/^COLS:$1://"; }
+
+  is "widest line sets the column count" "$(colresult widest-line-wins)" "6"
+  is "trailing pane padding is not counted" "$(colresult trailing-pad-ignored)" "3"
+  is "empty text is one column" "$(colresult empty-text-one-col)" "1"
+  is "blank lines are one column" "$(colresult blank-lines-one-col)" "1"
 }
 
 # ------------------------------------------------------------ coherence tests
