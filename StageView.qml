@@ -210,6 +210,9 @@ Item {
   // open()'s own full batch already covers it (see PreviewSource.seqRereads).
   property var seqWatermark: ({})
 
+  // Applied from the tail (slice(-max)): when a read exceeds the cap, the
+  // newest output is the part worth keeping — a head-capped preview shows
+  // how the session started, not what it needs now.
   readonly property int maxReadChars: 8000
 
   function queueRead(paneId) {
@@ -252,7 +255,7 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         if (root.readInFlight.length === 0) return
-        var clean = root.stripAnsi(text).slice(0, root.maxReadChars)
+        var clean = root.stripAnsi(text).slice(-root.maxReadChars)
         var map = Object.assign({}, root.herdrTexts)
         map[root.readInFlight] = clean
         root.herdrTexts = map
@@ -325,7 +328,7 @@ Item {
         // Same ingestion trust boundary as the local read above: remote
         // terminal output is untrusted content the moment it crosses the
         // ssh pipe, regardless of how much we trust the host's identity.
-        var clean = root.stripAnsi(text).slice(0, root.maxReadChars)
+        var clean = root.stripAnsi(text).slice(-root.maxReadChars)
         var map = Object.assign({}, root.remoteTexts)
         map[root.remoteInFlightKey] = { text: clean, at: Date.now() }
         root.remoteTexts = map
@@ -675,6 +678,10 @@ Item {
           if (!isRemote || !remoteEntry) return ""
           return PreviewSource.staleLabel(Date.now() - remoteEntry.at, root.remoteMinIntervalMs)
         }
+        // Slabs are recycled across pots; a reader's scroll position must not
+        // survive into another pot's preview.
+        readonly property string potKey: slab.pot ? slab.pot.key : ""
+        onPotKeyChanged: flick.followTail = true
 
         Flickable {
           id: flick
@@ -684,6 +691,16 @@ Item {
           contentHeight: Math.max(height, bodyText.implicitHeight)
           clip: true
           boundsBehavior: Flickable.StopAtBounds
+
+          // Terminal rule: the tail is the truth, so new content keeps the
+          // view pinned to the bottom — unless the reader deliberately
+          // scrolled up, in which case their position wins until they return
+          // to the bottom themselves.
+          property bool followTail: true
+          function pinToTail() { contentY = Math.max(0, contentHeight - height) }
+          onMovementEnded: followTail = atYEnd
+          onContentHeightChanged: if (followTail && !moving) pinToTail()
+          onHeightChanged: if (followTail && !moving) pinToTail()
 
           Text {
             id: bodyText
