@@ -72,6 +72,10 @@ Panel {
   // window reports the same PID and the process tree cannot tell them apart.
   readonly property string herdrWindow: setting("herdrWindow", "")
 
+  // Empty falls back to the host name, which matches herdr's default remote
+  // window title of "{hostname}: {workspace}".
+  readonly property string remoteWindow: setting("remoteWindow", "")
+
   // More than one distinct host among the pots (local counts as one) switches
   // the list into grouped rendering: host header rows, no per-row host tag.
   readonly property bool grouped: {
@@ -123,13 +127,19 @@ Panel {
         "--", pot.host,
         (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
       ])
+      // The window to raise is the local terminal holding the ssh session.
+      root.raise(root.remoteWindow || pot.host)
       return
     }
 
     if (!pot.paneId) return
     Quickshell.execDetached(["herdr", "agent", "focus", pot.paneId])
+    root.raise(root.herdrWindow)
+  }
+
+  function raise(match) {
     raiser.running = false
-    raiser.command = [root.pluginDir + "bin/kettle-herdr-window", root.herdrWindow]
+    raiser.command = [root.pluginDir + "bin/kettle-herdr-window", match]
     raiser.running = true
   }
 
@@ -150,11 +160,13 @@ Panel {
       onStreamFinished: {
         var addr = String(text || "").trim()
         if (addr.length > 0) return root.focusWindow(addr)
-        // The one failure the user can fix themselves (set herdrWindow), so
-        // it must not fail silently.
+        // The one failure the user can fix themselves (set the title
+        // substring), so it must not fail silently.
         console.warn("kettle: cannot locate herdr's window — herdr's internal "
           + "tab switched, but nothing was raised. On a single-process "
-          + "terminal set \"herdrWindow\" to a title substring (see README).")
+          + "terminal set \"herdrWindow\" (local) or \"remoteWindow\" (the "
+          + "terminal holding your ssh session) to a title substring "
+          + "(see README).")
       }
     }
   }

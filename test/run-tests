@@ -474,6 +474,26 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     && no "idle teardown is reversible" "stop() clears desiredRunning with no path back" \
     || ok "idle teardown is reversible"
 
+  # Focusing herdr's internal tab is invisible when the OS window sits on
+  # another workspace, so a focus with no raise reads as "click does nothing" —
+  # which is how the rherdr branch shipped.
+  local focuses raises
+  focuses=$(grep -vE '^\s*//' Panel.qml | grep -cE 'agent focus|"agent", *"focus"')
+  raises=$(grep -vE '^\s*//' Panel.qml | grep -c 'root\.raise(')
+  [[ ${focuses:-0} -ge 2 && ${raises:-0} -eq ${focuses:-0} ]] \
+    && ok "every pane focus is paired with a window raise" \
+    || no "every pane focus is paired with a window raise" "focus=$focuses raise=$raises"
+
+  # A settings key the UI reads but the manifest never declares silently reads
+  # its default forever, with no way for the user to change it.
+  local undeclared=""
+  for k in $(grep -oE 'setting\("[a-zA-Z]+"' Panel.qml | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+    grep -q "\"$k\"" manifest.json || undeclared="$undeclared $k"
+  done
+  [[ -z "$(echo $undeclared)" ]] \
+    && ok "every setting the panel reads is declared in the manifest" \
+    || no "every setting the panel reads is declared" "undeclared:$undeclared"
+
   # No plugin-spawned ssh may become the ControlMaster: a reload SIGKILLs it.
   local guarded
   guarded=$(cat RemoteHerdrPoller.qml Panel.qml 2>/dev/null \

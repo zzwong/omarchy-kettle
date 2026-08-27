@@ -147,6 +147,18 @@ and launch herdr with a matching title, e.g. `ghostty --title=herdr -e herdr`.
 On multi-process terminals Kettle finds it automatically and you can leave this
 unset.
 
+### `remoteWindow`
+
+The same problem for a remote host's herdr: the window to raise is the local
+terminal holding your ssh session. Unset, Kettle matches on the host name,
+which works because herdr *does* title that window — `{hostname}: {workspace}`
+by default, e.g. `framework: ~`. Set this only if the remote overrides
+`window_title` in its herdr config:
+
+```json
+{ "id": "zzwong.kettle", "remoteWindow": "my-ssh-tab" }
+```
+
 ## Model
 
 Each pot names the model beside the agent — `Claude Code · Opus 5`.
@@ -238,9 +250,11 @@ That is irreducible, because the hook runs as that user.
 ### Limits
 
 - **No ssh master, no remote herdr pots.** `status` tells you when this is why.
-- **Remote herdr pots jump the remote pane only.** They have no OSC nonce, so
-  Kettle knows which pane to focus but not which local window, if any, is
-  displaying it.
+- **Remote herdr pots raise the window by title, not by nonce.** They have no
+  OSC nonce, so Kettle matches the terminal holding your ssh session on the
+  host name (see [`remoteWindow`](#remotewindow)) rather than knowing its
+  window address outright. A detached remote session has no local window and
+  focuses the remote pane only.
 - **An agent running detached on the remote** (inside remote tmux, or on
   someone else's display) gets an informational pot with no jump target.
 - **Remotes must be Linux.** The pushed hook needs bash ≥ 4 and reads
@@ -257,6 +271,7 @@ offers them directly; they can also be set by hand on the widget's entry in
 | `showCount` | `true` | show the live count beside the glyph |
 | `notifications` | `true` | desktop notification on state changes |
 | `herdrWindow` | `""` | title/class substring identifying herdr's window |
+| `remoteWindow` | `""` | same, for the terminal holding your ssh session; empty matches the host name |
 
 ## Notifications
 
