@@ -122,21 +122,3 @@ function gridFit(count, availW, availH, aspect, gap) {
   }
   return best
 }
-
-// ---- text-preview column fit ---------------------------------------------
-// `herdr agent read` returns rows already hard-wrapped at the pane's own
-// width; re-wrapping them at slab width shreds the layout (rules and words
-// break mid-line). The preview instead renders unwrapped and scales the
-// monospace grid to fit, so it needs the grid's true width in columns: the
-// longest line, ignoring trailing whitespace — terminal rows arrive padded
-// to pane width, and counting the padding would shrink every preview to the
-// pane's full width even when the content is narrow.
-function fitColumns(text) {
-  var lines = String(text || "").split("\n")
-  var max = 1
-  for (var i = 0; i < lines.length; i++) {
-    var len = lines[i].replace(/\s+$/, "").length
-    if (len > max) max = len
-  }
-  return max
-}

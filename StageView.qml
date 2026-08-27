@@ -683,14 +683,6 @@ Item {
         readonly property string potKey: slab.pot ? slab.pot.key : ""
         onPotKeyChanged: flick.followTail = true
 
-        // Reference metrics at a fixed size give the font's advance-per-pixel
-        // ratio, so the fit below stays correct whatever the mono face is.
-        FontMetrics {
-          id: monoMetrics
-          font.family: Style.font.family
-          font.pixelSize: 100
-        }
-
         Flickable {
           id: flick
           anchors.fill: parent
@@ -723,11 +715,13 @@ Item {
             text: content.body.length > 0 ? content.body : "…"
             textFormat: Text.PlainText
             // The rows arrive hard-wrapped at the pane's own width; wrapping
-            // them again at slab width breaks rules and words mid-line. Render
-            // the grid unwrapped and scale it to fit instead, like a zoomed-out
-            // terminal — the floor keeps a pathological line (a pane far wider
-            // than the slab) from shrinking the whole preview into fog; past
-            // it, the Flickable pans horizontally.
+            // them again at slab width breaks rules and words mid-line, and
+            // shrink-to-fit made a wide pane's preview too small to read.
+            // Render the grid unwrapped at a slight optical zoom of the
+            // display's own body size instead — the slab reads like the real
+            // terminal stepped back from — and let lines wider than the slab
+            // pan horizontally. Terminals are left-anchored, so resting at
+            // the left edge shows the part that matters.
             wrapMode: Text.NoWrap
             color: root.pickerText
             // A terminal snapshot must stay monospaced to read as one — the
@@ -736,12 +730,7 @@ Item {
             // token instead (the one every terminal-adjacent surface
             // aliases to "monospace").
             font.family: Style.font.family
-            font.pixelSize: {
-              var cols = PreviewSource.fitColumns(content.body)
-              var perCol = monoMetrics.averageCharacterWidth / 100
-              var px = Math.floor(flick.width / (cols * perCol))
-              return Math.max(7, Math.min(Style.font.bodySmall, px))
-            }
+            font.pixelSize: Math.round(Style.font.body * 0.85)
           }
         }
 
