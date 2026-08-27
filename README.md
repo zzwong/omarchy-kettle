@@ -219,6 +219,12 @@ Bind the panel itself in `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + SHIFT + T", "Kettle", "omarchy-shell kettle toggle")
 ```
 
+Stage — a live preview deck of every pot — binds separately:
+
+```lua
+o.bind("SUPER + SHIFT + GRAVE", "Kettle Stage", "omarchy-shell kettle stage")
+```
+
 ## Remote hosts over ssh
 
 Agent sessions on another machine appear on your bar, tagged with the host.

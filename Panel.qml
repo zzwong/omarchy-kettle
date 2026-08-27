@@ -4,7 +4,6 @@ import Quickshell.Io
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
-import "HostModel.js" as HostModel
 
 // Kettle — long-running work as pots on the bar.
 //
@@ -15,10 +14,57 @@ Panel {
   id: root
 
   // Must match the manifest id — the registry's moduleWidgets() keys on it.
-  // The IPC target stays the short "kettle": it is typed by hand in keybindings.
   moduleName: "zzwong.kettle"
-  ipcTarget: "kettle"
-  manageIpc: false   // this panel owns the single IpcHandler for its target
+
+  // Shared state lives in KettleService.qml (manifest kind "service") —
+  // PotStore, both pollers, Relay, and the single `IpcHandler{target:
+  // "kettle"}` all moved there so StageView.qml's overlay can see hook and
+  // remote pots too (they used to arrive only through this panel's own
+  // IpcHandler/Relay — see KettleService.qml's header). No `ipcTarget` here
+  // any more: the service owns that target now, and Quickshell IpcHandlers
+  // are single-owner, so this panel must not declare a second one.
+  //
+  // The panel loader (shell.qml, panel/overlay/menu kinds) injects `service`
+  // automatically, but the bar-widget loader (plugins/bar/Bar.qml's
+  // injectProps) only sets bar/moduleName/settings — so this widget fetches
+  // the service itself, once `bar` (and therefore `bar.shell`, the same
+  // shell root the panel loader calls `serviceFor` on) is injected. Reactive
+  // like any QML binding: it re-resolves if `bar` changes or the service is
+  // (re)created later.
+  readonly property var service:
+    (root.bar && root.bar.shell && typeof root.bar.shell.serviceFor === "function")
+      ? root.bar.shell.serviceFor(root.moduleName) : null
+
+  // Never fed anything — a stable, correctly-shaped stand-in for the shared
+  // store during the brief window before `service` resolves (or if it never
+  // does), so the many `store.` bindings below don't each need a null guard.
+  PotStore { id: emptyStore }
+
+  readonly property var store: (root.service && root.service.potStore) || emptyStore
+  readonly property var relay: root.service ? root.service.relay : null
+  // HerdrPoller.serverDown starts true ("no session yet"), so defaulting to
+  // true here while the service is unresolved describes the same state.
+  readonly property bool serverDown: (root.service && root.service.poller) ? root.service.poller.serverDown : true
+
+  // The bar-widget setting the service has no way to read for itself (see
+  // KettleService.qml's `notificationsEnabled`) — pushed in whenever either
+  // side changes, so a live settings edit still takes effect immediately.
+  Binding {
+    target: root.service
+    property: "notificationsEnabled"
+    value: root.notify
+    when: !!root.service
+  }
+
+  // IPC-triggered open/close/toggle of this panel's dropdown: PanelController
+  // state is private to this one live instance, so the service forwards
+  // rather than owning it (see KettleService.qml's IpcHandler).
+  Connections {
+    target: root.service
+    function onOpenPanelRequested() { root.open() }
+    function onClosePanelRequested() { root.close() }
+    function onTogglePanelRequested() { root.toggle() }
+  }
 
   // Nerd Font glyphs, verified present in JetBrainsMonoNerdFont.
   // State is carried by glyph first and colour second: Omarchy themes expose
@@ -95,172 +141,31 @@ Panel {
   // `done` to `idle`, and CLI reads never mark a tab seen — so the next poll
   // drops the pot with no widget-side bookkeeping at all.
   //
-  // Two steps, because `herdr agent focus` switches herdr's internal tab but
-  // does NOT raise the OS window. Without the second step the jump silently
-  // does nothing visible when herdr is on another workspace.
+  // Mechanism lives in Jump.qml, shared with the Stage overlay — this panel
+  // just closes itself first, since Jump never closes a caller's surface.
   function jump(pot) {
     if (!pot) return
     root.close()
-
-    // Hook-sourced sessions carry their own window address, resolved once at
-    // SessionStart via an OSC 2 title nonce. No herdr involved, and no
-    // resolver subprocess needed.
-    if (pot.source === "agent") {
-      if (pot.windowAddr) focusWindow(pot.windowAddr)
-      // Only a finished pot is dismissed by looking at it. A session that is
-      // still working stays on the bar after you jump to it — clearing it
-      // would hide live work behind a single click.
-      if (!store.isLive(pot.state)) store.dropHookPot(pot.key)
-      return
-    }
-
-    if (pot.source === "rherdr") {
-      // Rides the user's existing ControlMaster (~48ms). ControlMaster=no so
-      // we can never become the master a reload would then kill.
-      Quickshell.execDetached([
-        "ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
-        "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
-        // Absolute path, resolved at install: a non-interactive ssh gets no
-        // login shell, so a bare `herdr` fails with "command not found" —
-        // silently, because execDetached discards output.
-        // paneId is regex-validated on ingest and herdrPath on load, so this
-        // interpolation is safe — but it runs on the remote, not here.
-        "--", pot.host,
-        (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
-      ])
-      // The window to raise is the local terminal holding the ssh session.
-      root.raise(root.remoteWindow || pot.host)
-      return
-    }
-
-    if (!pot.paneId) return
-    Quickshell.execDetached(["herdr", "agent", "focus", pot.paneId])
-    root.raise(root.herdrWindow)
+    jumper.jump(pot)
   }
 
-  function raise(match) {
-    raiser.running = false
-    raiser.command = [root.pluginDir + "bin/kettle-herdr-window", match]
-    raiser.running = true
-  }
-
-  function focusWindow(addr) {
-    // Hyprland's dispatch API is Lua now: the old
-    // `hyprctl dispatch focuswindow address:0x…` form is a parse error, and
-    // hl.dispatch() wants a dispatcher object rather than a string.
-    Quickshell.execDetached([
-      "hyprctl", "dispatch",
-      "hl.dsp.focus({ window = \"address:" + addr + "\" })"
-    ])
-  }
-
-  Process {
-    id: raiser
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var addr = String(text || "").trim()
-        if (addr.length > 0) return root.focusWindow(addr)
-        // The one failure the user can fix themselves (set the title
-        // substring), so it must not fail silently.
-        console.warn("kettle: cannot locate herdr's window — herdr's internal "
-          + "tab switched, but nothing was raised. On a single-process "
-          + "terminal set \"herdrWindow\" (local) or \"remoteWindow\" (the "
-          + "terminal holding your ssh session) to a title substring "
-          + "(see README).")
-      }
-    }
-  }
-
-  // Focus changes are pushed by Hyprland, so acknowledgement costs nothing —
-  // no extra polling, no subprocess.
-  Connections {
-    target: Hyprland
-    function onActiveToplevelChanged() {
-      var tl = Hyprland.activeToplevel
-      if (tl && tl.address) store.seenWindow(store.canonAddr(tl.address))
-    }
-  }
-
-  Relay {
-    id: relay
+  Jump {
+    id: jumper
     store: store
-  }
-
-  // One streaming channel per configured host. The token files double as the
-  // host registry, so adding or revoking a host is a file operation.
-  //
-  // Instantiator, not Repeater: Repeater only instantiates Item delegates and
-  // silently produces nothing for a QtObject, which is what this is.
-  // Reconciled incrementally, never reassigned: a rebuilt delegate would orphan
-  // that host's pots (#8, HostModel.js).
-  ListModel {
-    id: remoteHostModel
-    // No-op today: tokens load async, so hostList is still empty here. Guards
-    // against a load path that populates it before this Connections exists.
-    Component.onCompleted: root.syncRemoteHosts()
-  }
-
-  function syncRemoteHosts() {
-    var current = []
-    for (var i = 0; i < remoteHostModel.count; i++)
-      current.push(remoteHostModel.get(i).hostName)
-    var d = HostModel.diff(current, relay.hostList)
-    for (var r = 0; r < d.remove.length; r++) remoteHostModel.remove(d.remove[r])
-    for (var a = 0; a < d.add.length; a++) remoteHostModel.append({hostName: d.add[a]})
-  }
-
-  Connections {
-    target: relay
-    function onHostListChanged() { root.syncRemoteHosts() }
-  }
-
-  Instantiator {
-    id: remoteHosts
-    model: remoteHostModel
-    delegate: RemoteHerdrPoller {
-      required property string hostName
-      host: hostName
-      pluginDir: root.pluginDir
-      herdrPath: relay.herdrPathFor(hostName)
-      Component.onCompleted: start()
-      // Destruction now means the host left the registry, so its pots must go
-      // with it — nothing else clears them.
-      Component.onDestruction: if (store) store.dropRemoteHost(host)
-      // Renamed from agentsChanged: that collides with the implicit
-      // property-change signal QML generates, so the handler never fired.
-      onSnapshotAgents: function(list) { store.reconcileRemote(host, list) }
-      onDown: store.dropRemoteHost(host)
-      // Unreachable long enough that its pots cannot be trusted.
-      onLost: store.dropRemoteHost(host)
-    }
-  }
-
-  PotStore {
-    id: store
+    relay: root.relay
     pluginDir: root.pluginDir
-    onPotChanged: function(pot, fromState) {
-      if (root.notify) notifier.consider(pot, fromState)
-    }
+    herdrWindow: root.herdrWindow
+    remoteWindow: root.remoteWindow
   }
 
-  Notifier {
-    id: notifier
-    enabled: root.notify
-    focusedPaneId: poller.focusedPaneId
-    // Hook and remote pots have no paneId, so paneId-based suppression could
-    // never match them and a blocked pot would notify even while you watched
-    // its window. Window address covers those.
-    focusedWindow: store.canonAddr(Hyprland.activeToplevel ? Hyprland.activeToplevel.address : "")
-    glyphAttention: root.glyphAttention
-    glyphReady: root.glyphReady
-    glyphBurnt: root.glyphBurnt
-  }
-
-  HerdrPoller {
-    id: poller
-    onSnapshot: function(agents, focusedPaneId) { store.reconcile(agents) }
-    onServerLost: store.clear()
+  // The overlay is a separate entry point (StageView.qml) per the manifest,
+  // not a sibling in this object tree — the shell host is the only thing
+  // that can reach both, so this forwards rather than opening directly.
+  // Fixed argv, no user input. (Kept identical to KettleService.qml's own
+  // `stage()`, which the "kettle stage" IPC verb calls instead of this one —
+  // this copy backs the in-panel "Open Stage" button.)
+  function stage() {
+    Quickshell.execDetached(["omarchy-shell", "shell", "toggle", "zzwong.kettle"])
   }
 
   // Drives the live elapsed clocks without re-polling herdr. Only runs while
@@ -293,35 +198,6 @@ Panel {
     if (pot && pot.state !== "murky") root.jump(pot)
   }
 
-  IpcHandler {
-    target: "kettle"
-
-    function open() { root.open() }
-    function close() { root.close() }
-    function show() { root.open() }
-    function hide() { root.close() }
-    function toggle() { root.toggle() }
-    function count(): string { return String(store.liveCount) }
-
-    // Entry point for agents outside herdr. The payload is base64 so that a
-    // command line, a prompt, or a cwd containing quotes cannot break the
-    // transport.
-    //
-    // Unlike the relay, this does NOT sanitize: reaching this IPC already
-    // requires running as the same user, who could call store.ingest by other
-    // means anyway. Do not assume ingest() validates — remote input goes
-    // through Relay.sanitize() precisely because this path does not.
-    function agentEvent(b64: string): string {
-      try {
-        var ev = JSON.parse(Qt.atob(b64))
-        store.ingest(ev)
-        return "ok"
-      } catch (e) {
-        return "bad-payload"
-      }
-    }
-  }
-
   visible: true
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -346,7 +222,7 @@ Panel {
     tooltipText: root.hasAnything
       ? (store.liveCount + " cooking" + (store.pots.length > store.liveCount
           ? ", " + (store.pots.length - store.liveCount) + " waiting" : ""))
-      : (poller.serverDown ? "Kettle — no herdr session" : "Kettle — nothing cooking")
+      : (root.serverDown ? "Kettle — no herdr session" : "Kettle — nothing cooking")
 
     onPressed: function(b) { root.toggle() }
   }
@@ -382,7 +258,7 @@ Panel {
         // ---------- header ----------
         Item {
           width: parent.width
-          implicitHeight: Math.max(title.implicitHeight, sub.implicitHeight)
+          implicitHeight: Math.max(title.implicitHeight, sub.implicitHeight, stageButton.implicitHeight)
 
           Text {
             id: title
@@ -395,10 +271,25 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
           }
 
+          // Overview of every pot at once. Lives beside the title rather
+          // than the pot rows below, since it acts on the whole panel, not
+          // one pot — closing this panel first matches every row's jump.
+          PanelActionButton {
+            id: stageButton
+            anchors.left: title.right
+            anchors.leftMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: ""
+            tooltipText: "Open Stage"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            onClicked: { root.close(); root.stage() }
+          }
+
           Text {
             id: sub
             text: {
-              if (poller.serverDown) return "NO SESSION"
+              if (root.serverDown) return "NO SESSION"
               if (store.pots.length === 0) return "NOTHING COOKING"
               return store.liveCount + " COOKING"
             }
@@ -417,7 +308,7 @@ Panel {
           visible: store.pots.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
-          text: poller.serverDown
+          text: root.serverDown
             ? "No herdr server is running. Start one and pots will appear here."
             : "Nothing is cooking. Long-running agents and commands show up here."
           color: Qt.darker(root.bar.foreground, 1.5)

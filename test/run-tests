@@ -7,6 +7,11 @@
 # The relay group needs a running Omarchy shell with the plugin loaded; it is
 # skipped automatically when the socket is absent, so the suite still passes
 # on a machine that is only checking the shell scripts.
+#
+# The preview group needs the `qs` (Quickshell) binary — already a hard
+# runtime dependency of the plugin itself, unlike a JS engine — to execute
+# PreviewSource.js for real; it is likewise skipped automatically when `qs`
+# is absent.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -731,6 +736,158 @@ print(d['source'], d['agent'], d['id'], d['state'], d['cwd'], d['model'], d['foc
     && no "unknown state rejected" "accepted" || ok "unknown state rejected"
 }
 
+# -------------------------------------------------------------- preview tests
+# PreviewSource.resolve() is the pot-origin -> preview-kind decision table
+# from docs/plan-stage-view.md ("Preview source per pot origin"). Run the
+# real QML-embedded function through an isolated `qs -p` instance (the same
+# technique AGENTS.md names for debugging cache drift) rather than
+# hand-mirroring the truth table in bash/python — a mirror can drift from
+# the code it's meant to check, which is exactly the failure mode this test
+# exists to prevent.
+test_preview() {
+  echo "preview"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "preview source resolution" "qs not on PATH"
+    return
+  fi
+
+  local T; T=$(mktemp -d)
+  cp "$ROOT/PreviewSource.js" "$T/"
+  cat > "$T/harness.qml" <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import "PreviewSource.js" as PreviewSource
+
+QtObject {
+  id: root
+  Component.onCompleted: {
+    var cases = [
+      ["hook-with-window", {source: "agent", windowAddr: "0xdead"}, false],
+      ["hook-without-window", {source: "agent", windowAddr: ""}, false],
+      ["local-herdr", {source: "herdr", paneId: "3"}, false],
+      ["remote-selected", {source: "rherdr", paneId: "5", host: "box"}, true],
+      ["remote-unselected", {source: "rherdr", paneId: "5", host: "box"}, false],
+      ["remote-selected-no-paneid", {source: "rherdr", paneId: "", host: "box"}, true],
+      ["degenerate-no-paneid", {source: "herdr", paneId: ""}, false],
+      ["degenerate-unknown-source", {source: "bogus", paneId: "9"}, false],
+      ["null-pot", null, false]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var r = PreviewSource.resolve(cases[i][1], cases[i][2])
+      console.log("RESULT:" + cases[i][0] + ":" + JSON.stringify(r))
+    }
+
+    // seqRereads(): the seq-driven local re-read batching decision (plan's
+    // "Refresh budget" + risk note "several seqs bump in one poll -> one
+    // batch, never parallel spawns").
+    var seqCases = [
+      ["first-sighting-not-queued",
+        [{source: "herdr", paneId: "a", seq: 3}], {}],
+      ["unchanged-seq-not-queued",
+        [{source: "herdr", paneId: "a", seq: 3}], {a: 3}],
+      ["bumped-seq-queued",
+        [{source: "herdr", paneId: "a", seq: 4}], {a: 3}],
+      ["several-bumps-one-batch",
+        [{source: "herdr", paneId: "a", seq: 4}, {source: "herdr", paneId: "b", seq: 9}],
+        {a: 3, b: 8}],
+      ["non-herdr-source-ignored",
+        [{source: "rherdr", paneId: "a", seq: 4}], {a: 3}],
+      ["missing-paneid-ignored",
+        [{source: "herdr", paneId: "", seq: 4}], {}]
+    ]
+    for (var s = 0; s < seqCases.length; s++) {
+      var sr = PreviewSource.seqRereads(seqCases[s][1], seqCases[s][2])
+      console.log("SEQ:" + seqCases[s][0] + ":" + JSON.stringify(sr))
+    }
+
+    // staleLabel(): remote-read staleness wording (plan's risk note — ssh
+    // latency past the refresh interval must show age, not block).
+    var staleCases = [
+      ["fresh-within-interval", 1000, 4000],
+      ["exactly-at-interval", 4000, 4000],
+      ["stale-past-interval", 7500, 4000],
+      ["negative-age", -1, 4000],
+      ["non-numeric-age", "x", 4000]
+    ]
+    for (var st = 0; st < staleCases.length; st++) {
+      var lbl = PreviewSource.staleLabel(staleCases[st][1], staleCases[st][2])
+      console.log("STALE:" + staleCases[st][0] + ":" + JSON.stringify(lbl))
+    }
+
+    killer.running = true
+  }
+  // qs has no clean single-shot exit signal (Qt.exit() finds no receiver in
+  // an isolated -p run); self-kill once the assertions are printed instead
+  // of relying on the caller's `timeout` to reap a hung process every time.
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+
+  local out
+  out=$(cd "$T" && timeout 10 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+
+  result() { printf '%s\n' "$out" | grep -o "RESULT:$1:.*" | head -1 | sed "s/^RESULT:$1://"; }
+  kindof() { python3 -c "
+import json,sys
+try: print(json.loads(sys.argv[1]).get(sys.argv[2],''))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" "$2" 2>/dev/null; }
+
+  is "hook pot with window -> screencopy" "$(kindof "$(result hook-with-window)" kind)" "screencopy"
+  is "hook pot without window -> card" "$(kindof "$(result hook-without-window)" kind)" "card"
+  is "local herdr pot -> text" "$(kindof "$(result local-herdr)" kind)" "text"
+  is "local herdr pot is not marked remote" "$(kindof "$(result local-herdr)" remote)" "False"
+  is "selected remote herdr pot -> text" "$(kindof "$(result remote-selected)" kind)" "text"
+  is "selected remote herdr pot is marked remote" "$(kindof "$(result remote-selected)" remote)" "True"
+  is "unselected remote herdr pot -> card" "$(kindof "$(result remote-unselected)" kind)" "card"
+  is "selected remote pot without paneId -> card" "$(kindof "$(result remote-selected-no-paneid)" kind)" "card"
+  is "herdr pot missing paneId -> card" "$(kindof "$(result degenerate-no-paneid)" kind)" "card"
+  is "unknown pot source -> card" "$(kindof "$(result degenerate-unknown-source)" kind)" "card"
+  is "null pot -> card" "$(kindof "$(result null-pot)" kind)" "card"
+
+  # seqRereads(): seq-driven local re-read batching (plan's "Refresh budget").
+  seqresult() { printf '%s\n' "$out" | grep -o "SEQ:$1:.*" | head -1 | sed "s/^SEQ:$1://"; }
+  toread_len() { python3 -c "
+import json,sys
+try: print(len(json.loads(sys.argv[1]).get('toRead', [])))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" 2>/dev/null; }
+  toread_has() { python3 -c "
+import json,sys
+try: print('yes' if sys.argv[2] in json.loads(sys.argv[1]).get('toRead', []) else 'no')
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" "$2" 2>/dev/null; }
+  watermarkval() { python3 -c "
+import json,sys
+try: print(json.loads(sys.argv[1]).get('watermark', {}).get(sys.argv[2], ''))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" "$2" 2>/dev/null; }
+
+  is "first sighting is not queued" "$(toread_len "$(seqresult first-sighting-not-queued)")" "0"
+  is "first sighting records the watermark" "$(watermarkval "$(seqresult first-sighting-not-queued)" a)" "3"
+  is "unchanged seq is not queued" "$(toread_len "$(seqresult unchanged-seq-not-queued)")" "0"
+  is "bumped seq is queued" "$(toread_has "$(seqresult bumped-seq-queued)" a)" "yes"
+  is "bumped seq updates the watermark" "$(watermarkval "$(seqresult bumped-seq-queued)" a)" "4"
+  is "several bumps in one poll is one batch" "$(toread_len "$(seqresult several-bumps-one-batch)")" "2"
+  is "several-bump batch includes pane a" "$(toread_has "$(seqresult several-bumps-one-batch)" a)" "yes"
+  is "several-bump batch includes pane b" "$(toread_has "$(seqresult several-bumps-one-batch)" b)" "yes"
+  is "non-herdr source is never queued" "$(toread_len "$(seqresult non-herdr-source-ignored)")" "0"
+  is "pane missing paneId is never queued" "$(toread_len "$(seqresult missing-paneid-ignored)")" "0"
+
+  # staleLabel(): remote-read staleness wording (plan's risk note).
+  staleresult() { printf '%s\n' "$out" | grep -o "STALE:$1:.*" | head -1 | sed "s/^STALE:$1://"; }
+
+  is "fresh read has no stale label" "$(staleresult fresh-within-interval)" '""'
+  is "read exactly at the interval is not stale" "$(staleresult exactly-at-interval)" '""'
+  is "read past the interval says how old it is" "$(staleresult stale-past-interval)" '"as of 7s ago"'
+  is "negative age has no stale label" "$(staleresult negative-age)" '""'
+  is "non-numeric age has no stale label" "$(staleresult non-numeric-age)" '""'
+}
+
 # ------------------------------------------------------------ coherence tests
 # The suite was green while two user-visible defects sat in the QML layer: a
 # documented state nothing could produce, and pots that outlived their host.
@@ -777,7 +934,10 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   grep -q "signal lost()" RemoteHerdrPoller.qml \
     && ok "unreachable host can drop its pots" \
     || no "unreachable host can drop its pots" "no lost signal"
-  grep -q "onLost: store.dropRemoteHost" Panel.qml \
+  # Ingestion (the RemoteHerdrPoller Instantiator that wires this) lives in
+  # KettleService.qml, not Panel.qml, since manifest kind "service" — check
+  # both so this survives either owning it.
+  grep -q "onLost: store.dropRemoteHost" KettleService.qml Panel.qml \
     && ok "lost signal is wired to the store" \
     || no "lost signal is wired" "signal exists but nothing consumes it"
 
@@ -790,8 +950,8 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   # another workspace, so a focus with no raise reads as "click does nothing" —
   # which is how the rherdr branch shipped.
   local focuses raises
-  focuses=$(grep -vE '^\s*//' Panel.qml | grep -cE 'agent focus|"agent", *"focus"')
-  raises=$(grep -vE '^\s*//' Panel.qml | grep -c 'root\.raise(')
+  focuses=$(grep -vE '^\s*//' Jump.qml | grep -cE 'agent focus|"agent", *"focus"')
+  raises=$(grep -vE '^\s*//' Jump.qml | grep -c 'root\.raise(')
   [[ ${focuses:-0} -ge 2 && ${raises:-0} -eq ${focuses:-0} ]] \
     && ok "every pane focus is paired with a window raise" \
     || no "every pane focus is paired with a window raise" "focus=$focuses raise=$raises"
@@ -835,16 +995,16 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   # A bare array model rebuilds every delegate, orphaning that host's pots
   # (#8). The hostmodel group proves the reconcile, but it needs qs and so
   # skips on CI — these greps are the only thing standing here.
-  grep -q 'model: remoteHostModel' Panel.qml \
+  grep -q 'model: remoteHostModel' KettleService.qml \
     && ok "the host Instantiator uses the reconciled model" \
     || no "the host Instantiator uses the reconciled model" "model is not remoteHostModel"
-  grep -q 'model: relay\.hostList' Panel.qml \
+  grep -q 'model: relay\.hostList' KettleService.qml \
     && no "the host model is not a bare array" "model: relay.hostList is back" \
     || ok "the host model is not a bare array"
 
   # A typo in the handler name degrades to a runtime warning and every resync
   # stops silently — exactly how agentsChanged was lost (Panel.qml:228).
-  grep -q 'function onHostListChanged()' Panel.qml \
+  grep -q 'function onHostListChanged()' KettleService.qml \
     && ok "the resync handler is named for its signal" \
     || no "the resync handler is named for its signal" "onHostListChanged missing"
 
@@ -857,9 +1017,50 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   # excluding it is what let the #6 regression pass this check.
   is "the clock is moved in exactly one place" \
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
+  # ---- service refactor: shared state has exactly one owner --------------
+  # manifest kind "service" is what makes ingestion and both pollers shared
+  # between the bar-widget and overlay entry points; if this regresses, the
+  # overlay silently goes back to its own incomplete pot store.
+  if grep -q '"service"' manifest.json && grep -q '"KettleService.qml"' manifest.json; then
+    ok "manifest declares the service entry point"
+  else
+    no "manifest declares the service entry point" "kinds/entryPoints.service missing"
+  fi
+
+  [[ -f KettleService.qml ]] \
+    && ok "KettleService.qml exists" \
+    || no "KettleService.qml exists" "manifest points at a file that is not there"
+
+  # IpcHandler{target:"kettle"} is single-owner (Quickshell binds a target
+  # once); a second declaration anywhere in the plugin would silently fail to
+  # bind or steal the target from the first.
+  local kettle_targets
+  kettle_targets=$(grep -l 'target: "kettle"' ./*.qml | wc -l | tr -d ' ')
+  is "exactly one file owns the kettle IPC target" "$kettle_targets" "1"
+
+  # Neither UI entry point should stand up its own HerdrPoller or Relay —
+  # KettleService.qml is the single owner checked above, and each of these
+  # spawns processes (Panel.qml/StageView.qml both used to, before the
+  # ingestion moved). Anchored to line-start so this does not also match
+  # `delegate: RemoteHerdrPoller {`, a legitimate consumer-side line.
+  for f in Panel.qml StageView.qml; do
+    if grep -qE '^\s*HerdrPoller \{' "$f"; then
+      no "$f does not own a duplicate HerdrPoller" "found one"
+    else
+      ok "$f does not own a duplicate HerdrPoller"
+    fi
+    if grep -qE '^\s*Relay \{' "$f"; then
+      no "$f does not own a duplicate Relay" "found one"
+    else
+      ok "$f does not own a duplicate Relay"
+    fi
+    grep -q "root.service.potStore" "$f" \
+      && ok "$f consumes the shared potStore" \
+      || no "$f consumes the shared potStore" "no reference to service.potStore"
+  done
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel reachability hostmodel preview relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
