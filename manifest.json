@@ -19,7 +19,8 @@
     "defaults": {
       "showCount": true,
       "notifications": true,
-      "herdrWindow": ""
+      "herdrWindow": "",
+      "remoteWindow": ""
     },
     "schema": [
       {
@@ -38,6 +39,12 @@
         "key": "herdrWindow",
         "type": "string",
         "label": "Title substring of herdr's window",
+        "defaultValue": ""
+      },
+      {
+        "key": "remoteWindow",
+        "type": "string",
+        "label": "Title substring of the terminal holding your ssh session",
         "defaultValue": ""
       }
     ]
