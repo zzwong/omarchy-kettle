@@ -84,6 +84,12 @@ Item {
     root.previewAspect, root.gridGap)
   readonly property int gridCols: Math.max(1, gridFit.cols)
 
+  // Floor for a screencopy preview's scale, the pixel counterpart of the text
+  // preview's optical zoom. Below roughly half native a terminal capture stops
+  // being readable and starts being texture, so slabs smaller than that crop
+  // instead of shrinking further.
+  readonly property real minPreviewScale: 0.5
+
   // Shear slope shared by every parallelogram (28px over a 519px reference
   // height), so skewed edges stay parallel at any slab size. Copied from
   // Stage verbatim — deliberately not re-derived, so the visual language
@@ -537,7 +543,12 @@ Item {
     Item {
       id: chip
       visible: slab.pot !== null
-      x: slab.skew + Style.space(10)
+      // Top-RIGHT, not top-left. A preview's content is a terminal, which is
+      // left-anchored and ragged-right, so the left corner is exactly where
+      // the first line of output lands and the right corner is reliably
+      // empty. Stage's own chip sits left because a wallpaper thumbnail has
+      // no such bias.
+      x: slab.topRight - width - Style.space(10)
       y: Style.space(10)
       width: chipRow.implicitWidth + Style.space(16)
       height: chipRow.implicitHeight + Style.space(8)
@@ -630,19 +641,45 @@ Item {
     Component {
       id: screencopyContent
       Item {
+        id: shot
         readonly property var topl: root.toplevelFor(slab.previewSource.windowAddr)
+        readonly property real inset: slab.selected ? 1 : 0
+        clip: true
 
         // Live only while the overlay is open — captureSource goes null the
         // moment `opened` flips false, same gate Stage uses (Stage.qml:425).
         ScreencopyView {
-          anchors.fill: parent
-          anchors.margins: slab.selected ? 1 : 0
-          captureSource: (root.opened && topl && topl.wayland) ? topl.wayland : null
+          id: capture
+          captureSource: (root.opened && shot.topl && shot.topl.wayland) ? shot.topl.wayland : null
           live: true
+
+          // Filling the slab scaled a whole window down to slab width, which
+          // for a full-screen terminal is about a third native — the same
+          // illegibility the text preview stopped shrinking into. Fit while
+          // the fit stays readable, then hold the floor and crop, so more
+          // pots means each slab shows LESS of its window rather than the
+          // same window smaller.
+          readonly property real fit:
+            (sourceSize.width > 0 && shot.width > 0)
+              ? (shot.width - 2 * shot.inset) / sourceSize.width : 1
+          readonly property real zoom: Math.max(fit, root.minPreviewScale)
+
+          width: sourceSize.width > 0
+            ? sourceSize.width * zoom : shot.width - 2 * shot.inset
+          height: sourceSize.height > 0
+            ? sourceSize.height * zoom : shot.height - 2 * shot.inset
+
+          // Top-left, NOT the tail. A screencopy captures the terminal's
+          // viewport rather than its scrollback, so the top of the capture is
+          // already recent output, while the region below the prompt is the
+          // blank remainder of a partly-filled screen. Anchoring to the bottom
+          // the way the text preview does frames that blank.
+          x: shot.inset
+          y: shot.inset
         }
 
         Text {
-          visible: !topl
+          visible: !shot.topl
           anchors.centerIn: parent
           text: "window not found"
           color: Util.alpha(root.pickerText, 0.6)
