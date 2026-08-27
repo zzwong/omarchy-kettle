@@ -587,7 +587,14 @@ Item {
 
         Text {
           text: slab.pot ? root.stateGlyph(slab.pot.state) : ""
-          color: slab.pot ? root.severityColor(slab.pot.state) : root.pickerText
+          // Inverted onto the chip, like the AgentMark beside it. The chip is
+          // filled with the selected-border accent, and severityColor() picks
+          // colours for the dark panel behind a pot row — `ready` returns that
+          // same accent and the rest return pickerText, so the glyph drew
+          // light-on-light and read as a blank gap next to the mark. State is
+          // glyph-first here anyway (README "Colours"), and needs-attention
+          // still separates itself by pulsing.
+          color: Color.menu.background
           font.family: Style.font.menuFamily
           font.pixelSize: Style.font.title
           anchors.verticalCenter: parent.verticalCenter
