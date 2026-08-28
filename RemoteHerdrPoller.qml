@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Reachability.js" as Reachability
 
 // One long-lived ssh channel per remote host, streaming herdr state.
 //
@@ -57,6 +58,21 @@ QtObject {
   // forever while showing stale pots is the failure mode that matters most.
   readonly property int lostAfterMs: 120000
   property double unreachableSince: 0
+  // Edge, not level: the drop happens once per outage. See Reachability.js.
+  property bool lostFired: false
+
+  // The reachability state machine lives in Reachability.js so the suite can
+  // exercise it without standing up a poller and its ssh processes; these two
+  // move it in and out of the properties the rest of the file reads.
+  function reachState() {
+    return {streaming: streaming, unreachableSince: unreachableSince,
+            lostFired: lostFired, lostAfterMs: lostAfterMs}
+  }
+  function applyReach(s) {
+    streaming = s.streaming
+    unreachableSince = s.unreachableSince
+    lostFired = s.lostFired
+  }
 
   // Backoff, autossh's shape: a channel that dies within the gate is treated
   // as a persistent failure rather than something to retry tightly.
@@ -177,15 +193,15 @@ QtObject {
     }
 
     onStarted: {
-      root.streaming = true
-      root.unreachableSince = 0
+      // A started channel is the only evidence the host is back, so this is
+      // also where the drop latch is released.
+      root.applyReach(Reachability.reachable(root.reachState()))
       root.startedAt = Date.now()
       root.lastLine = Date.now()
     }
 
     onExited: function(code, status) {
-      root.streaming = false
-      if (root.unreachableSince === 0) root.unreachableSince = Date.now()
+      root.applyReach(Reachability.unreachable(root.reachState(), Date.now()))
       var lived = Date.now() - root.startedAt
 
       // Lived past the gate: treat as a transient drop and retry promptly.
@@ -260,12 +276,12 @@ QtObject {
       // snapshot nor a down marker — so neither reconcile nor `down` can
       // clear its pots. Without this they would sit on the bar, possibly
       // still ticking as "simmering", until the shell reloaded.
-      if (!root.streaming && root.unreachableSince > 0
-          && Date.now() - root.unreachableSince > root.lostAfterMs) {
+      var gate = Reachability.lostGate(root.reachState(), Date.now())
+      if (gate.fire) {
         root.log("unreachable for 2m, dropping its pots")
         root.lost()
-        root.unreachableSince = Date.now()   // re-arm rather than repeat-fire
       }
+      root.lostFired = gate.lostFired
 
       // Any sign of life ends an idle release.
       if (root.idling && root.masterAlive && root.herdrPath.length > 0) {
