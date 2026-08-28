@@ -412,7 +412,7 @@ test_reachability() {
   fi
 
   local T; T=$(mktemp -d)
-  cp "$ROOT/Reachability.js" "$T/" 2>/dev/null
+  cp "$ROOT/Reachability.js" "$T/"
   cat > "$T/harness.qml" <<'EOF'
 import QtQuick
 import Quickshell
@@ -456,7 +456,7 @@ QtObject {
     for (var t = t0 + 5000; t <= t0 + 26 * 60 * 1000; t += 5000) {
       var tick = Reachability.lostGate(s, t)
       if (tick.fire) fires++
-      s.unreachableSince = tick.unreachableSince
+      // Only the latch carries forward; nothing may move the armed clock.
       s.lostFired = tick.lostFired
     }
     console.log("REACH:26min-outage-fires:" + JSON.stringify({fires: fires}))
@@ -467,6 +467,13 @@ QtObject {
     var again = Reachability.unreachable(back, 1000000)
     var r2 = Reachability.lostGate(again, 1000000 + 120001)
     console.log("REACH:second-outage-fires-again:" + JSON.stringify(r2))
+
+    // The deadline means "silent since", so arming twice without an
+    // intervening start must keep the first one. Without this the whole gate
+    // can be pushed out indefinitely by a host that fails fast enough.
+    var armed = Reachability.unreachable(st({}), 1000)
+    console.log("REACH:double-arm:"
+                + JSON.stringify(Reachability.unreachable(armed, 5000)))
 
     killer.running = true
   }
@@ -501,6 +508,65 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
      "$(fieldof "$(reach 26min-outage-fires)" fires)" "1"
   is "reconnecting releases the latch" \
      "$(fieldof "$(reach second-outage-fires-again)" fire)" "True"
+  is "arming twice keeps the first deadline" \
+     "$(fieldof "$(reach double-arm)" unreachableSince)" "1000"
+
+  # The pure gate above cannot see reachState()/applyReach(), so a transposed
+  # field there would pass every assertion in this group. Drive the real
+  # component instead: canRun is false (herdrPath empty), so no ssh is spawned
+  # and only the supervisor Timer runs.
+  local W; W=$(mktemp -d)
+  cp "$ROOT/RemoteHerdrPoller.qml" "$ROOT/Reachability.js" "$W/"
+  cat > "$W/wiring.qml" <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+
+QtObject {
+  id: root
+  property int fires: 0
+  property RemoteHerdrPoller p: RemoteHerdrPoller {
+    host: "wiring-test"
+    herdrPath: ""
+    onLost: root.fires++
+  }
+  Component.onCompleted: {
+    // Round-trip a known state through the properties the module reads and
+    // writes. A swapped assignment inside applyReach shows up here.
+    p.applyReach({streaming: false, unreachableSince: 5, lostFired: true})
+    console.log("WIRE:roundtrip:" + JSON.stringify(p.reachState()))
+    // Now arm past the gate and let the supervisor run: one drop, then quiet.
+    p.applyReach({streaming: false, unreachableSince: Date.now() - 130000,
+                  lostFired: false})
+  }
+  // Three supervisor ticks (5s each): fire on the first, silent on the rest.
+  property Timer done: Timer {
+    interval: 17000
+    running: true
+    onTriggered: {
+      console.log("WIRE:supervisor:" + JSON.stringify(
+        {fires: root.fires, lostFired: root.p.lostFired}))
+      killer.running = true
+    }
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+  local wout
+  wout=$(cd "$W" && timeout 40 qs --no-color -p wiring.qml 2>&1)
+  rm -rf "$W"
+  wire() { printf '%s\n' "$wout" | grep -o "WIRE:$1:.*" | head -1 | sed "s/^WIRE:$1://"; }
+
+  is "applyReach lands each field where reachState reads it" \
+     "$(fieldof "$(wire roundtrip)" lostFired)" "True"
+  is "  and does not disturb the armed clock" \
+     "$(fieldof "$(wire roundtrip)" unreachableSince)" "5"
+  is "the live supervisor drops once" \
+     "$(fieldof "$(wire supervisor)" fires)" "1"
+  is "  and latches the component, not just the module" \
+     "$(fieldof "$(wire supervisor)" lostFired)" "True"
 }
 
 # ---------------------------------------------------------------- emit tests
@@ -625,8 +691,11 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   grep -q 'import "Reachability.js"' RemoteHerdrPoller.qml \
     && ok "the poller decides lost-ness through the tested gate" \
     || no "the poller decides lost-ness through the tested gate" "gate is inline again"
-  grep -qE '^\s*root\.unreachableSince = Date\.now\(\)' RemoteHerdrPoller.qml \
-    && no "the drop does not re-arm its own clock" "unreachableSince re-armed inline" \
+  # Deliberately loose on the left-hand side: the regression assigned through
+  # `root.`, but the bare property is legal inside the QtObject and would read
+  # identically. Only Reachability.unreachable() may arm the clock.
+  grep -qE '(^|[^.[:alnum:]_])unreachableSince\s*=\s*Date\.now\(\)' RemoteHerdrPoller.qml \
+    && no "the drop does not re-arm its own clock" "unreachableSince armed inline" \
     || ok "the drop does not re-arm its own clock"
 }
 

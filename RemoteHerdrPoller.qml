@@ -278,10 +278,13 @@ QtObject {
       // still ticking as "simmering", until the shell reloaded.
       var gate = Reachability.lostGate(root.reachState(), Date.now())
       if (gate.fire) {
+        // Latch before emitting: a handler that synchronously restarted the
+        // channel would otherwise have its onStarted release overwritten by a
+        // stale value computed before the emit.
+        root.lostFired = true
         root.log("unreachable for 2m, dropping its pots")
         root.lost()
       }
-      root.lostFired = gate.lostFired
 
       // Any sign of life ends an idle release.
       if (root.idling && root.masterAlive && root.herdrPath.length > 0) {
