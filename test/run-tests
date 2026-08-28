@@ -399,11 +399,8 @@ test_pimodel() {
 }
 
 # -------------------------------------------------------- reachability tests
-# Reachability.lostGate() is the "this host has been silent long enough to
-# drop its pots" edge. Run the real QML-embedded function through an isolated
-# `qs -p` instance rather than mirroring the arithmetic here: a mirror drifts
-# from the code it checks, which is the failure mode this test exists to
-# prevent (same technique as AGENTS.md names for cache drift).
+# Runs the real gate through an isolated `qs -p` rather than mirroring its
+# arithmetic here, since a mirror drifts from the code it checks.
 test_reachability() {
   echo "reachability"
   if ! command -v qs >/dev/null 2>&1; then
@@ -422,58 +419,54 @@ import "Reachability.js" as Reachability
 QtObject {
   id: root
   function st(o) {
-    return {streaming: o.streaming || false,
-            unreachableSince: o.unreachableSince || 0,
+    return {desiredRunning: o.desiredRunning === undefined ? true : o.desiredRunning,
+            idling: o.idling || false,
+            lastSeen: o.lastSeen || 0,
             lostFired: o.lostFired || false,
             lostAfterMs: 120000}
   }
   Component.onCompleted: {
     var cases = [
-      // A live channel is proof of reachability, whatever the clock says.
-      ["streaming-never-fires", st({streaming: true, unreachableSince: 1}), 999999],
-      // Never seen to fail: nothing to drop.
-      ["reachable-never-fires", st({unreachableSince: 0}), 999999],
-      ["within-window-holds", st({unreachableSince: 1}), 60000],
-      // The gate is `>`, so the boundary itself must not fire.
-      ["at-window-holds", st({unreachableSince: 1}), 120001],
-      ["past-window-fires", st({unreachableSince: 1}), 120002],
-      // The regression: once dropped, a still-dead host must stay quiet.
-      ["latched-does-not-refire",
-        st({unreachableSince: 120001, lostFired: true}), 999999]
+      ["never-seen-holds", st({lastSeen: 0}), 999999],
+      ["fresh-line-holds", st({lastSeen: 1}), 60000],
+      ["at-window-holds", st({lastSeen: 1}), 120001],   // gate is `>`
+      ["past-window-fires", st({lastSeen: 1}), 120002],
+      ["latched-does-not-refire", st({lastSeen: 1, lostFired: true}), 999999],
+      ["idling-holds", st({lastSeen: 1, idling: true}), 999999],
+      ["stopped-holds", st({lastSeen: 1, desiredRunning: false}), 999999]
     ]
     for (var i = 0; i < cases.length; i++) {
       var r = Reachability.lostGate(cases[i][1], cases[i][2])
       console.log("REACH:" + cases[i][0] + ":" + JSON.stringify(r))
     }
 
-    // Replay of the 2026-08-27 12:04-12:29 journal: host unreachable across a
-    // suspend, supervisor ticking every 5s for 26 minutes. The bug logged and
-    // dropped on 13 of those ticks; the pots were already gone after the first.
-    // t0 is non-zero because 0 is the "reachable" sentinel for unreachableSince.
-    var t0 = 1000
-    var s = Reachability.unreachable(st({}), t0)
+    // #6: a respawn storm used to escape the gate entirely, because every
+    // spawn refreshed the clock. 7 minutes of it, no line ever received.
+    var s = st({lastSeen: 1000})
     var fires = 0
-    for (var t = t0 + 5000; t <= t0 + 26 * 60 * 1000; t += 5000) {
+    for (var t = 6000; t <= 7 * 60 * 1000; t += 5000) {
       var tick = Reachability.lostGate(s, t)
       if (tick.fire) fires++
-      // Only the latch carries forward; nothing may move the armed clock.
       s.lostFired = tick.lostFired
     }
-    console.log("REACH:26min-outage-fires:" + JSON.stringify({fires: fires}))
+    console.log("REACH:respawn-storm-fires:" + JSON.stringify({fires: fires}))
 
-    // A latch that never releases would be the opposite bug: the host comes
-    // back, dies again, and its stale pots sit on the bar forever.
-    var back = Reachability.reachable(s)
-    var again = Reachability.unreachable(back, 1000000)
-    var r2 = Reachability.lostGate(again, 1000000 + 120001)
-    console.log("REACH:second-outage-fires-again:" + JSON.stringify(r2))
+    // #5's incident, still one drop.
+    var q = st({lastSeen: 1000})
+    var qfires = 0
+    for (var u = 6000; u <= 26 * 60 * 1000; u += 5000) {
+      var qt = Reachability.lostGate(q, u)
+      if (qt.fire) qfires++
+      q.lostFired = qt.lostFired
+    }
+    console.log("REACH:26min-outage-fires:" + JSON.stringify({fires: qfires}))
 
-    // The deadline means "silent since", so arming twice without an
-    // intervening start must keep the first one. Without this the whole gate
-    // can be pushed out indefinitely by a host that fails fast enough.
-    var armed = Reachability.unreachable(st({}), 1000)
-    console.log("REACH:double-arm:"
-                + JSON.stringify(Reachability.unreachable(armed, 5000)))
+    // A line is the only release.
+    var seen = Reachability.sawLine(st({lastSeen: 1, lostFired: true}), 500000)
+    console.log("REACH:line-releases:" + JSON.stringify(seen))
+    var after = st({lastSeen: seen.lastSeen, lostFired: seen.lostFired})
+    console.log("REACH:second-outage-fires-again:"
+                + JSON.stringify(Reachability.lostGate(after, 500000 + 120001)))
 
     killer.running = true
   }
@@ -497,24 +490,27 @@ try: print(json.loads(sys.argv[1]).get(sys.argv[2],''))
 except Exception: print('<no-json: ' + sys.argv[1] + '>')
 " "$1" "$2" 2>/dev/null; }
 
-  is "streaming host never drops"      "$(fieldof "$(reach streaming-never-fires)" fire)" "False"
-  is "reachable host never drops"      "$(fieldof "$(reach reachable-never-fires)" fire)" "False"
-  is "inside the window holds"         "$(fieldof "$(reach within-window-holds)" fire)" "False"
+  is "a host never heard from holds"   "$(fieldof "$(reach never-seen-holds)" fire)" "False"
+  is "a fresh line holds"              "$(fieldof "$(reach fresh-line-holds)" fire)" "False"
   is "the window boundary holds"       "$(fieldof "$(reach at-window-holds)" fire)" "False"
   is "past the window drops"           "$(fieldof "$(reach past-window-fires)" fire)" "True"
   is "  and latches so it cannot refire" "$(fieldof "$(reach past-window-fires)" lostFired)" "True"
   is "a latched host stays quiet"      "$(fieldof "$(reach latched-does-not-refire)" fire)" "False"
-  is "a 26-minute outage drops once, not every two minutes" \
+  is "an idle release is not an outage" "$(fieldof "$(reach idling-holds)" fire)" "False"
+  is "a stopped poller is not an outage" "$(fieldof "$(reach stopped-holds)" fire)" "False"
+  is "a 7-minute respawn storm still drops once" \
+     "$(fieldof "$(reach respawn-storm-fires)" fires)" "1"
+  is "a 26-minute outage drops once" \
      "$(fieldof "$(reach 26min-outage-fires)" fires)" "1"
-  is "reconnecting releases the latch" \
+  is "a received line clears the latch" \
+     "$(fieldof "$(reach line-releases)" lostFired)" "False"
+  is "  and restarts the clock" \
+     "$(fieldof "$(reach line-releases)" lastSeen)" "500000"
+  is "so a second outage drops again" \
      "$(fieldof "$(reach second-outage-fires-again)" fire)" "True"
-  is "arming twice keeps the first deadline" \
-     "$(fieldof "$(reach double-arm)" unreachableSince)" "1000"
 
-  # The pure gate above cannot see reachState()/applyReach(), so a transposed
-  # field there would pass every assertion in this group. Drive the real
-  # component instead: canRun is false (herdrPath empty), so no ssh is spawned
-  # and only the supervisor Timer runs.
+  # The pure gate cannot see the QML wiring. Drive the real component with
+  # herdrPath empty, so canRun is false and no ssh is spawned.
   local W; W=$(mktemp -d)
   cp "$ROOT/RemoteHerdrPoller.qml" "$ROOT/Reachability.js" "$W/"
   cat > "$W/wiring.qml" <<'EOF'
@@ -531,23 +527,29 @@ QtObject {
     onLost: root.fires++
   }
   Component.onCompleted: {
-    // Round-trip a known state through the properties the module reads and
-    // writes. A swapped assignment inside applyReach shows up here.
-    p.applyReach({streaming: false, unreachableSince: 5, lostFired: true})
+    p.start()
+    p.applyReach({lastSeen: 5, lostFired: true})
     console.log("WIRE:roundtrip:" + JSON.stringify(p.reachState()))
-    // Now arm past the gate and let the supervisor run: one drop, then quiet.
-    p.applyReach({streaming: false, unreachableSince: Date.now() - 130000,
-                  lostFired: false})
+    // lastLine is what a respawn would refresh; it must buy no time.
+    p.applyReach({lastSeen: Date.now() - 130000, lostFired: false})
+    p.lastLine = Date.now()
   }
-  // Three supervisor ticks (5s each): fire on the first, silent on the rest.
-  property Timer done: Timer {
+  // Three supervisor ticks: fire on the first, silent on the rest.
+  property Timer probe: Timer {
     interval: 17000
     running: true
     onTriggered: {
       console.log("WIRE:supervisor:" + JSON.stringify(
         {fires: root.fires, lostFired: root.p.lostFired}))
-      killer.running = true
+      root.p.handleLine("H")
+      console.log("WIRE:afterline:" + JSON.stringify(
+        {lostFired: root.p.lostFired, fresh: (Date.now() - root.p.lastSeen) < 2000}))
+      done.running = true
     }
+  }
+  property Timer done: Timer {
+    interval: 1000
+    onTriggered: killer.running = true
   }
   property Process killer: Process {
     command: ["kill", "-9", String(Quickshell.processId)]
@@ -555,19 +557,24 @@ QtObject {
 }
 EOF
   local wout
-  wout=$(cd "$W" && timeout 40 qs --no-color -p wiring.qml 2>&1)
+  wout=$(cd "$W" && timeout 60 qs --no-color -p wiring.qml 2>&1)
   rm -rf "$W"
   wire() { printf '%s\n' "$wout" | grep -o "WIRE:$1:.*" | head -1 | sed "s/^WIRE:$1://"; }
 
   is "applyReach lands each field where reachState reads it" \
      "$(fieldof "$(wire roundtrip)" lostFired)" "True"
-  is "  and does not disturb the armed clock" \
-     "$(fieldof "$(wire roundtrip)" unreachableSince)" "5"
+  is "  and does not disturb the clock" \
+     "$(fieldof "$(wire roundtrip)" lastSeen)" "5"
   is "the live supervisor drops once" \
      "$(fieldof "$(wire supervisor)" fires)" "1"
-  is "  and latches the component, not just the module" \
+  is "  even though a respawn refreshed lastLine" \
      "$(fieldof "$(wire supervisor)" lostFired)" "True"
+  is "handleLine releases the latch on the real component" \
+     "$(fieldof "$(wire afterline)" lostFired)" "False"
+  is "  and marks the host seen" \
+     "$(fieldof "$(wire afterline)" fresh)" "True"
 }
+
 
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
@@ -691,12 +698,15 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   grep -q 'import "Reachability.js"' RemoteHerdrPoller.qml \
     && ok "the poller decides lost-ness through the tested gate" \
     || no "the poller decides lost-ness through the tested gate" "gate is inline again"
-  # Deliberately loose on the left-hand side: the regression assigned through
-  # `root.`, but the bare property is legal inside the QtObject and would read
-  # identically. Only Reachability.unreachable() may arm the clock.
-  grep -qE '(^|[^.[:alnum:]_])unreachableSince\s*=\s*Date\.now\(\)' RemoteHerdrPoller.qml \
-    && no "the drop does not re-arm its own clock" "unreachableSince armed inline" \
-    || ok "the drop does not re-arm its own clock"
+  # A spawn is not evidence (#6): a second sawLine call site would be in
+  # onStarted, which is the bug.
+  is "only one place marks the host seen" \
+     "$(grep -c 'Reachability\.sawLine' RemoteHerdrPoller.qml)" "1"
+
+  # Loose on the left-hand side: the bare property is legal inside the
+  # QtObject and reads identically to a `root.`-qualified assignment.
+  is "the clock is moved in exactly one place" \
+     "$(grep -cE '(^|[^.[:alnum:]_])lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
 groups=(${1:-structure coherence hook emit install guard stream pimodel reachability relay})

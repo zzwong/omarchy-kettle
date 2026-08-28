@@ -57,20 +57,17 @@ QtObject {
   // How long a host may be unreachable before its pots are dropped. Retrying
   // forever while showing stale pots is the failure mode that matters most.
   readonly property int lostAfterMs: 120000
-  property double unreachableSince: 0
-  // Edge, not level: the drop happens once per outage. See Reachability.js.
+  // Last line received. Unlike lastLine, never reset on spawn — see
+  // Reachability.js.
+  property double lastSeen: 0
   property bool lostFired: false
 
-  // The reachability state machine lives in Reachability.js so the suite can
-  // exercise it without standing up a poller and its ssh processes; these two
-  // move it in and out of the properties the rest of the file reads.
   function reachState() {
-    return {streaming: streaming, unreachableSince: unreachableSince,
+    return {desiredRunning: desiredRunning, idling: idling, lastSeen: lastSeen,
             lostFired: lostFired, lostAfterMs: lostAfterMs}
   }
   function applyReach(s) {
-    streaming = s.streaming
-    unreachableSince = s.unreachableSince
+    lastSeen = s.lastSeen
     lostFired = s.lostFired
   }
 
@@ -122,6 +119,7 @@ QtObject {
     var line = String(raw || "").trim()
     if (line.length === 0) return
     lastLine = Date.now()
+    applyReach(Reachability.sawLine(reachState(), Date.now()))
     if (stale) { stale = false; log("recovered") }
 
     if (line === "H") return                    // heartbeat: liveness only
@@ -193,15 +191,14 @@ QtObject {
     }
 
     onStarted: {
-      // A started channel is the only evidence the host is back, so this is
-      // also where the drop latch is released.
-      root.applyReach(Reachability.reachable(root.reachState()))
+      // Must not touch lastSeen or the latch: bash execs even when ssh fails.
+      root.streaming = true
       root.startedAt = Date.now()
       root.lastLine = Date.now()
     }
 
     onExited: function(code, status) {
-      root.applyReach(Reachability.unreachable(root.reachState(), Date.now()))
+      root.streaming = false
       var lived = Date.now() - root.startedAt
 
       // Lived past the gate: treat as a transient drop and retry promptly.
@@ -278,10 +275,7 @@ QtObject {
       // still ticking as "simmering", until the shell reloaded.
       var gate = Reachability.lostGate(root.reachState(), Date.now())
       if (gate.fire) {
-        // Latch before emitting: a handler that synchronously restarted the
-        // channel would otherwise have its onStarted release overwritten by a
-        // stale value computed before the emit.
-        root.lostFired = true
+        root.lostFired = true      // latch before emitting, not after
         root.log("unreachable for 2m, dropping its pots")
         root.lost()
       }
