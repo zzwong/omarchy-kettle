@@ -320,6 +320,28 @@ test_structure() {
   # The remote stream loop is sourced by ssh, not executed locally.
   bash -n bin/kettle-herdr-stream.sh 2>/dev/null \
     && ok "parses (sh): remote stream loop" || no "parses (sh): remote stream loop" "syntax error"
+
+  # Same check for the QML, which until now nothing parsed: every other QML
+  # assertion in this suite is a grep, so a file with unbalanced braces passes
+  # all of them while failing to load at runtime — which is the whole plugin,
+  # both entry points, not one broken feature.
+  #
+  # qmlformat, not qmllint: it is purely syntactic and never resolves imports,
+  # so it needs no Quickshell on the box and exits non-zero only on a real
+  # parse error. Arch keeps it off PATH under /usr/lib/qt6/bin.
+  local qmlfmt=""
+  for c in qmlformat6 qmlformat /usr/lib/qt6/bin/qmlformat; do
+    command -v "$c" >/dev/null 2>&1 && { qmlfmt=$c; break; }
+  done
+  if [[ -z $qmlfmt ]]; then
+    skipt "parses (qml)" "no qmlformat — install qt6-declarative-dev-tools"
+  else
+    for f in ./*.qml; do
+      "$qmlfmt" "$f" >/dev/null 2>&1 \
+        && ok "parses (qml): $f" \
+        || no "parses (qml): $f" "$("$qmlfmt" "$f" 2>&1 >/dev/null | head -1)"
+    done
+  fi
 }
 
 # --------------------------------------------------------------- guard tests
