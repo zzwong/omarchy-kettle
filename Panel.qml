@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
+import "HostModel.js" as HostModel
 
 // Kettle — long-running work as pots on the bar.
 //
@@ -191,15 +192,39 @@ Panel {
   //
   // Instantiator, not Repeater: Repeater only instantiates Item delegates and
   // silently produces nothing for a QtObject, which is what this is.
+  // Reconciled incrementally, never reassigned: a rebuilt delegate would orphan
+  // that host's pots (#8, HostModel.js).
+  ListModel {
+    id: remoteHostModel
+    Component.onCompleted: root.syncRemoteHosts()   // hostListChanged only fires on change
+  }
+
+  function syncRemoteHosts() {
+    var current = []
+    for (var i = 0; i < remoteHostModel.count; i++)
+      current.push(remoteHostModel.get(i).hostName)
+    var d = HostModel.diff(current, relay.hostList)
+    for (var r = 0; r < d.remove.length; r++) remoteHostModel.remove(d.remove[r])
+    for (var a = 0; a < d.add.length; a++) remoteHostModel.append({hostName: d.add[a]})
+  }
+
+  Connections {
+    target: relay
+    function onHostListChanged() { root.syncRemoteHosts() }
+  }
+
   Instantiator {
     id: remoteHosts
-    model: relay.hostList
+    model: remoteHostModel
     delegate: RemoteHerdrPoller {
-      required property string modelData
-      host: modelData
+      required property string hostName
+      host: hostName
       pluginDir: root.pluginDir
-      herdrPath: relay.herdrPathFor(modelData)
+      herdrPath: relay.herdrPathFor(hostName)
       Component.onCompleted: start()
+      // Destruction now means the host left the registry, so its pots must go
+      // with it — nothing else clears them.
+      Component.onDestruction: if (store) store.dropRemoteHost(host)
       // Renamed from agentsChanged: that collides with the implicit
       // property-change signal QML generates, so the handler never fired.
       onSnapshotAgents: function(list) { store.reconcileRemote(host, list) }
