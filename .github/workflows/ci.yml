@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Only for qmlformat, which the structure group uses to parse-check the
+      # QML. Without it that check skips and a file that cannot load still
+      # goes green.
+      - name: Install qmlformat
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qt6-declarative-dev-tools
       - name: Run the test suite
         run: ./test/run-tests
 

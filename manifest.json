@@ -6,9 +6,12 @@
   "author": "zzwong",
   "license": "MIT",
   "description": "Long-running work as pots on the bar: herdr agent sessions, with jump-to-pane and done/blocked notifications.",
-  "kinds": ["bar-widget"],
+  "kinds": ["bar-widget", "overlay", "service"],
+  "keepLoaded": true,
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "Panel.qml",
+    "overlay": "StageView.qml",
+    "service": "KettleService.qml"
   },
   "barWidget": {
     "displayName": "Kettle",
