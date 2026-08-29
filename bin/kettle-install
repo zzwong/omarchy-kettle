@@ -1,6 +1,7 @@
 #!/bin/bash
 # Kettle installer — wires the agent hook into every supported CLI it finds:
-# Claude Code, Codex, Qwen Code, Gemini CLI, Factory droid, and Grok Build.
+# Claude Code, Codex, Qwen Code, Gemini CLI, Factory droid, Grok Build, and pi
+# (which takes an extension rather than a hook).
 #
 # The hook configs need an absolute path to kettle-agent-hook, which depends on
 # where the plugin was cloned. Hand-editing JSON files is a poor first run,
@@ -19,6 +20,8 @@ QWEN_SETTINGS="${QWEN_HOME:-$HOME/.qwen}/settings.json"
 GEMINI_SETTINGS="$HOME/.gemini/settings.json"
 FACTORY_HOOKS="$HOME/.factory/hooks.json"
 GROK_HOOK_FILE="$HOME/.grok/hooks/kettle.json"
+PI_SETTINGS="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json"
+PI_EXTENSION="$(cd "$(dirname "${BASH_SOURCE[0]}")/../pi" && pwd)/kettle.ts"
 
 # Per-tool event vocabularies. Claude fires Notification for both permission
 # gates and the idle nudge (the hook tells them apart); Codex and Qwen have an
@@ -168,6 +171,64 @@ PY
   esac
 }
 
+# pi has no hook config — it loads TypeScript extensions instead — so Kettle
+# registers the extension's path in pi's settings.json rather than merging hook
+# entries. Referenced by path, not copied, so `omarchy plugin update` moves the
+# extension forward the same way it does the hook.
+pi_extension() {
+  local mode=$1
+  [[ $mode == check ]] && {
+    python3 - "$PI_SETTINGS" "$PI_EXTENSION" <<'PY'
+import json, os, sys
+path, ext = sys.argv[1:]
+try:
+    doc = json.load(open(path))
+except Exception:
+    doc = {}
+present = ext in (doc.get("extensions") or [])
+print(f"  extension           {'ok' if present else 'MISSING'}")
+print("" if os.path.exists(ext) else f"  ! {ext} is missing from the plugin")
+PY
+    return
+  }
+  mkdir -p "$(dirname "$PI_SETTINGS")"
+  python3 - "$PI_SETTINGS" "$PI_EXTENSION" "$mode" <<'PY'
+import json, os, sys
+path, ext, mode = sys.argv[1:]
+doc = {}
+if os.path.exists(path):
+    try:
+        doc = json.load(open(path))
+    except Exception:
+        print(f"  ! {path} is not valid JSON; skipped")
+        sys.exit(0)
+    # Keep a copy before touching a file we did not write.
+    try:
+        with open(path + ".kettle-bak", "w") as b: json.dump(doc, b, indent=2)
+    except Exception: pass
+exts = list(doc.get("extensions") or [])
+if mode == "install":
+    if ext in exts:
+        print(f"  {path} already up to date")
+        sys.exit(0)
+    exts.append(ext)
+else:
+    if ext not in exts:
+        print(f"  {path} already clean")
+        sys.exit(0)
+    exts = [e for e in exts if e != ext]
+if exts:
+    doc["extensions"] = exts
+else:
+    doc.pop("extensions", None)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+print(f"  {'wrote' if mode == 'install' else 'cleaned'} {path}")
+PY
+}
+
 echo "Kettle hook: $HOOK"
 
 # target <label> <binary> <config> <style> <unit> <async> <events...>
@@ -192,6 +253,13 @@ if command -v grok >/dev/null 2>&1 || [[ -d $HOME/.grok ]]; then
   grok_file "$mode"
 else
   echo "Grok Build: not found, skipping"
+fi
+
+if command -v pi >/dev/null 2>&1 || [[ -d ${PI_CODING_AGENT_DIR:-$HOME/.pi/agent} ]]; then
+  echo "pi:"
+  pi_extension "$mode"
+else
+  echo "pi: not found, skipping"
 fi
 
 if [[ $mode == install ]]; then

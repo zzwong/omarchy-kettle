@@ -8,7 +8,8 @@ pot to land in the terminal it's running in.
 
 Sessions come from four sources: **herdr** (every agent it tracks, Pi
 included), hooks Kettle installs into **Claude Code, Codex, Qwen Code, Gemini
-CLI, Factory droid and Grok Build**, `kettle-emit` for
+CLI, Factory droid and Grok Build**, an extension it installs into **pi**,
+`kettle-emit` for
 [anything else](#any-other-agent), and remote hosts over ssh.
 
 ## Why
@@ -89,6 +90,27 @@ speaks each CLI's dialect (event names, payload casing, timeout units all
 differ); one visible consequence: Grok's notification payload is
 undocumented, so a Grok permission wait shows as `simmering` rather than a
 wrong `ready`.
+
+## pi
+
+pi is the one first-class agent with no hook config to install into — it loads
+TypeScript extensions instead. `kettle-install` registers `pi/kettle.ts` by
+absolute path in pi's `settings.json`, so `omarchy plugin update` moves the
+extension forward the way it does the hook.
+
+The extension does not reimplement the hook. It shells out to
+`kettle-agent-hook` with the same payload the Claude and Codex hooks send, so
+window identity, session state, and the remote ssh relay all work unchanged.
+It reports on `agent_settled` rather than `agent_end`, because pi may still
+auto-retry, compact and retry, or run a queued follow-up after `agent_end` —
+its own docs point status integrations at the later event.
+
+Before this, a pi session was visible only *inside* herdr, which left the most
+ordinary way to run it — `pi` in a terminal — reporting nothing.
+
+pi exposes no event for its own approval prompt, so a pi session waiting on
+approval stays `simmering` rather than turning `needs-attention`, the same
+compromise Grok Build makes.
 
 ## Any other agent
 
