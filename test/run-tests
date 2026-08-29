@@ -608,6 +608,108 @@ EOF
 }
 
 
+# ----------------------------------------------------------- host-model tests
+# Reassigning the Instantiator's model array rebuilds every delegate, which
+# orphans each host's pots (#8). Reconcile incrementally instead.
+test_hostmodel() {
+  echo "host-model"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "host delegate identity" "qs not on PATH"
+    return
+  fi
+
+  local T; T=$(mktemp -d)
+  cp "$ROOT/HostModel.js" "$T/"
+  cat > "$T/harness.qml" <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import "HostModel.js" as HostModel
+
+QtObject {
+  id: root
+  property var events: []
+  property ListModel hosts: ListModel {}
+
+  function sync(want) {
+    var current = []
+    for (var i = 0; i < hosts.count; i++) current.push(hosts.get(i).hostName)
+    var d = HostModel.diff(current, want)
+    for (var r = 0; r < d.remove.length; r++) hosts.remove(d.remove[r])
+    for (var a = 0; a < d.add.length; a++) hosts.append({hostName: d.add[a]})
+  }
+
+  property Instantiator inst: Instantiator {
+    model: root.hosts
+    delegate: QtObject {
+      required property string hostName
+      Component.onCompleted: root.events.push("+" + hostName)
+      Component.onDestruction: root.events.push("-" + hostName)
+    }
+  }
+
+  Component.onCompleted: {
+    var cases = [
+      ["no-change", ["a"], ["a"]],
+      ["add-one", ["a"], ["a", "b"]],
+      ["remove-one", ["a", "b"], ["a"]],
+      ["replace", ["a"], ["b"]],
+      ["remove-two-of-three", ["a", "b", "c"], ["b"]],
+      ["empty-out", ["a", "b"], []]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      console.log("DIFF:" + cases[i][0] + ":"
+                  + JSON.stringify(HostModel.diff(cases[i][1], cases[i][2])))
+    tick.running = true
+  }
+
+  // The claim that matters: adding a host must not disturb the delegate of a
+  // host that did not change.
+  property Timer tick: Timer {
+    interval: 300
+    onTriggered: {
+      root.sync(["a"])
+      root.events = []
+      root.sync(["a", "b"])
+      console.log("LIVE:after-add:" + JSON.stringify(root.events))
+      root.events = []
+      root.sync(["b"])
+      console.log("LIVE:after-remove:" + JSON.stringify(root.events))
+      killer.running = true
+    }
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+
+  local out
+  out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  d() { printf '%s\n' "$out" | grep -o "DIFF:$1:.*" | head -1 | sed "s/^DIFF:$1://"; }
+  l() { printf '%s\n' "$out" | grep -o "LIVE:$1:.*" | head -1 | sed "s/^LIVE:$1://"; }
+  jf() { python3 -c "
+import json,sys
+try: print(json.dumps(json.loads(sys.argv[1]).get(sys.argv[2],''), separators=(',',':')))
+except Exception: print('<no-json: ' + sys.argv[1] + '>')
+" "$1" "$2" 2>/dev/null; }
+
+  is "an unchanged list adds nothing"    "$(jf "$(d no-change)" add)" "[]"
+  is "  and removes nothing"             "$(jf "$(d no-change)" remove)" "[]"
+  is "a new host is appended"            "$(jf "$(d add-one)" add)" '["b"]'
+  is "  without touching the old one"    "$(jf "$(d add-one)" remove)" "[]"
+  is "a dropped host is removed by index" "$(jf "$(d remove-one)" remove)" "[1]"
+  is "a replacement both adds and removes" "$(jf "$(d replace)" add)" '["b"]'
+  is "  and removes the old index"       "$(jf "$(d replace)" remove)" "[0]"
+  # Descending, so removing them in order cannot shift a later index.
+  is "multiple removals are index-safe"  "$(jf "$(d remove-two-of-three)" remove)" "[2,0]"
+  is "emptying removes every index"      "$(jf "$(d empty-out)" remove)" "[1,0]"
+
+  is "adding a host leaves the others alone" "$(l after-add)" '["+b"]'
+  is "removing a host destroys only it"      "$(l after-remove)" '["-a"]'
+}
+
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
 # third parties build against, so pin it.
@@ -730,6 +832,22 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   grep -q 'import "Reachability.js"' RemoteHerdrPoller.qml \
     && ok "the poller decides lost-ness through the tested gate" \
     || no "the poller decides lost-ness through the tested gate" "gate is inline again"
+  # A bare array model rebuilds every delegate, orphaning that host's pots
+  # (#8). The hostmodel group proves the reconcile, but it needs qs and so
+  # skips on CI — these greps are the only thing standing here.
+  grep -q 'model: remoteHostModel' Panel.qml \
+    && ok "the host Instantiator uses the reconciled model" \
+    || no "the host Instantiator uses the reconciled model" "model is not remoteHostModel"
+  grep -q 'model: relay\.hostList' Panel.qml \
+    && no "the host model is not a bare array" "model: relay.hostList is back" \
+    || ok "the host model is not a bare array"
+
+  # A typo in the handler name degrades to a runtime warning and every resync
+  # stops silently — exactly how agentsChanged was lost (Panel.qml:228).
+  grep -q 'function onHostListChanged()' Panel.qml \
+    && ok "the resync handler is named for its signal" \
+    || no "the resync handler is named for its signal" "onHostListChanged missing"
+
   # A spawn is not evidence (#6): a second sawLine call site would be in
   # onStarted, and only seen() may mark the host alive.
   is "only one place marks the host seen" \
@@ -741,7 +859,7 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel reachability relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
