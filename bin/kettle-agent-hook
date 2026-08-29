@@ -109,6 +109,9 @@ agent=${agent_type:-}
 case ${agent,,} in
   *codex*)  agent="codex"  ;;
   *claude*) agent="claude" ;;
+  # Exact, not *pi*: the substring appears inside plenty of other names, and
+  # the pi extension is the only thing that sends this.
+  pi)       agent="pi"     ;;
   *)
     if   [[ -n ${QWEN_CODE_SESSION_ID:-}${QWEN_PROJECT_DIR:-} ]]; then agent="qwen"
     elif [[ -n ${GROK_SESSION_ID:-} ]];    then agent="grok"

@@ -123,6 +123,12 @@ test_hook() {
   out=$(FACTORY_PROJECT_DIR=/p hook_emit '{"hook_event_name":"Stop","session_id":"s1","cwd":"/p"}')
   is "FACTORY env names the agent" "$(field "$out" agent)" "droid"
 
+  # pi sends an explicit agent_type. Without a case for it the tier-three
+  # transcript fallback defaults to claude, and every pi pot would be mislabelled.
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p","agent_type":"pi","model":"deepseek-v4-flash"}')
+  is "agent_type pi is not mistaken for claude" "$(field "$out" agent)" "pi"
+  is "  and its model slug survives" "$(field "$out" model)" "deepseek-v4-flash"
+
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
 
@@ -203,6 +209,23 @@ print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']
   is "grok gets its own hook file" \
      "$(python3 -c "import json;d=json.load(open('$T/.grok/hooks/kettle.json'));print(sorted(d['hooks']))")" \
      "['SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']"
+
+  # pi takes an extension, not a hook: a path registered in its settings.json.
+  # Referenced rather than copied, so a plugin update moves it too.
+  mkdir -p "$T/.pi/agent"
+  printf '{"theme":"dark","defaultModel":"kimi-k2.6"}\n' > "$T/.pi/agent/settings.json"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "pi registers the extension by absolute path" \
+     "$(python3 -c "import json;print(json.load(open('$T/.pi/agent/settings.json'))['extensions'][0].endswith('/pi/kettle.ts'))")" "True"
+  is "  and leaves unrelated pi settings alone" \
+     "$(python3 -c "import json;print(json.load(open('$T/.pi/agent/settings.json'))['defaultModel'])")" "kimi-k2.6"
+  before_pi=$(md5sum "$T/.pi/agent/settings.json" | cut -d' ' -f1)
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "  and registering twice is idempotent" \
+     "$(md5sum "$T/.pi/agent/settings.json" | cut -d' ' -f1)" "$before_pi"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "  and remove drops the key entirely" \
+     "$(python3 -c "import json;print('extensions' in json.load(open('$T/.pi/agent/settings.json')))")" "False"
 
   QWEN_HOME="$T/.qwen" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
   is "remove deletes grok's file" "$(ls "$T/.grok/hooks/" 2>/dev/null | wc -l)" "0"
