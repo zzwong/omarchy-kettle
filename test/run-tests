@@ -541,6 +541,11 @@ QtObject {
     onTriggered: {
       console.log("WIRE:supervisor:" + JSON.stringify(
         {fires: root.fires, lostFired: root.p.lostFired}))
+      // Login-shell noise on the ssh session's stdout must not count.
+      var before = root.p.lastSeen
+      root.p.handleLine("Welcome to Ubuntu 24.04 LTS")
+      console.log("WIRE:afternoise:" + JSON.stringify(
+        {lostFired: root.p.lostFired, unchanged: root.p.lastSeen === before}))
       root.p.handleLine("H")
       console.log("WIRE:afterline:" + JSON.stringify(
         {lostFired: root.p.lostFired, fresh: (Date.now() - root.p.lastSeen) < 2000}))
@@ -569,6 +574,10 @@ EOF
      "$(fieldof "$(wire supervisor)" fires)" "1"
   is "  even though a respawn refreshed lastLine" \
      "$(fieldof "$(wire supervisor)" lostFired)" "True"
+  is "a login banner is not evidence" \
+     "$(fieldof "$(wire afternoise)" lostFired)" "True"
+  is "  and does not move the clock" \
+     "$(fieldof "$(wire afternoise)" unchanged)" "True"
   is "handleLine releases the latch on the real component" \
      "$(fieldof "$(wire afterline)" lostFired)" "False"
   is "  and marks the host seen" \
@@ -699,14 +708,14 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     && ok "the poller decides lost-ness through the tested gate" \
     || no "the poller decides lost-ness through the tested gate" "gate is inline again"
   # A spawn is not evidence (#6): a second sawLine call site would be in
-  # onStarted, which is the bug.
+  # onStarted, and only seen() may mark the host alive.
   is "only one place marks the host seen" \
      "$(grep -c 'Reachability\.sawLine' RemoteHerdrPoller.qml)" "1"
 
-  # Loose on the left-hand side: the bare property is legal inside the
-  # QtObject and reads identically to a `root.`-qualified assignment.
+  # Matches `root.lastSeen =` too: that is the form onStarted would use, and
+  # excluding it is what let the #6 regression pass this check.
   is "the clock is moved in exactly one place" \
-     "$(grep -cE '(^|[^.[:alnum:]_])lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
+     "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
 groups=(${1:-structure coherence hook emit install guard stream pimodel reachability relay})

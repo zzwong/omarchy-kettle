@@ -115,15 +115,21 @@ QtObject {
     if (chan.running) chan.running = false     // SIGTERM; onExited follows
   }
 
+  // Only herdr protocol counts as evidence. This is the ssh session's stdout,
+  // so a remote login shell can print banners — once per spawn, which is
+  // exactly the cadence that would defeat the gate.
+  function seen() {
+    applyReach(Reachability.sawLine(reachState(), Date.now()))
+    if (stale) { stale = false; log("recovered") }
+  }
+
   function handleLine(raw) {
     var line = String(raw || "").trim()
     if (line.length === 0) return
     lastLine = Date.now()
-    applyReach(Reachability.sawLine(reachState(), Date.now()))
-    if (stale) { stale = false; log("recovered") }
 
-    if (line === "H") return                    // heartbeat: liveness only
-    if (line === "D") { root.down(); return }   // herdr itself is gone
+    if (line === "H") { seen(); return }        // heartbeat: liveness only
+    if (line === "D") { seen(); root.down(); return }  // herdr itself is gone
 
     if (line.charAt(0) !== "S" || line.charAt(1) !== " ") return
     var payload
@@ -134,6 +140,7 @@ QtObject {
       return
     }
     if (!payload || !Array.isArray(payload.agents)) return
+    seen()
 
     // Same trust boundary as the relay: this is remote-controlled input.
     var clean = []
