@@ -196,7 +196,9 @@ Panel {
   // that host's pots (#8, HostModel.js).
   ListModel {
     id: remoteHostModel
-    Component.onCompleted: root.syncRemoteHosts()   // hostListChanged only fires on change
+    // No-op today: tokens load async, so hostList is still empty here. Guards
+    // against a load path that populates it before this Connections exists.
+    Component.onCompleted: root.syncRemoteHosts()
   }
 
   function syncRemoteHosts() {

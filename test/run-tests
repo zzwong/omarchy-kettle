@@ -832,6 +832,22 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   grep -q 'import "Reachability.js"' RemoteHerdrPoller.qml \
     && ok "the poller decides lost-ness through the tested gate" \
     || no "the poller decides lost-ness through the tested gate" "gate is inline again"
+  # A bare array model rebuilds every delegate, orphaning that host's pots
+  # (#8). The hostmodel group proves the reconcile, but it needs qs and so
+  # skips on CI — these greps are the only thing standing here.
+  grep -q 'model: remoteHostModel' Panel.qml \
+    && ok "the host Instantiator uses the reconciled model" \
+    || no "the host Instantiator uses the reconciled model" "model is not remoteHostModel"
+  grep -q 'model: relay\.hostList' Panel.qml \
+    && no "the host model is not a bare array" "model: relay.hostList is back" \
+    || ok "the host model is not a bare array"
+
+  # A typo in the handler name degrades to a runtime warning and every resync
+  # stops silently — exactly how agentsChanged was lost (Panel.qml:228).
+  grep -q 'function onHostListChanged()' Panel.qml \
+    && ok "the resync handler is named for its signal" \
+    || no "the resync handler is named for its signal" "onHostListChanged missing"
+
   # A spawn is not evidence (#6): a second sawLine call site would be in
   # onStarted, and only seen() may mark the host alive.
   is "only one place marks the host seen" \
