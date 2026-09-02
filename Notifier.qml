@@ -83,7 +83,11 @@ QtObject {
       "-g", glyphFor(worst.state),
       "-u", worst.state === "needs-attention" ? "critical" : "normal",
       items.length + " pots need you",
-      names.join(", ")
+      names.join(", "),
+      // Several pots, so no single place to jump; the panel lists them all.
+      // --exec is last because omarchy-notification-send only recognises it
+      // after the positionals, so an untrusted headline can never become it.
+      "--exec", "omarchy-shell", "kettle", "open"
     ])
   }
 
@@ -108,7 +112,10 @@ QtObject {
       "-g", glyphFor(pot.state),
       "-u", pot.state === "needs-attention" ? "critical" : "normal",
       headline,
-      body
+      body,
+      // Clicking the toast jumps to the pot exactly as a row click would: the
+      // daemon runs this argv as-is and Panel resolves the key at click time.
+      "--exec", "omarchy-shell", "kettle", "jump", pot.key
     ])
   }
 

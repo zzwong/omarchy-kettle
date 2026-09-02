@@ -796,6 +796,24 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     && ok "every pane focus is paired with a window raise" \
     || no "every pane focus is paired with a window raise" "focus=$focuses raise=$raises"
 
+  # A toast that cannot be clicked through is a dead end: it says an agent
+  # needs you and leaves you to find it. Every send must carry a click action,
+  # and each action must name an IPC method Panel actually exposes.
+  local sends execs
+  sends=$(grep -c '"omarchy-notification-send"' Notifier.qml)
+  execs=$(grep -c '"--exec", "omarchy-shell", "kettle"' Notifier.qml)
+  [[ ${sends:-0} -ge 1 && ${execs:-0} -eq ${sends:-0} ]] \
+    && ok "every notification carries a click action" \
+    || no "every notification carries a click action" "sends=$sends execs=$execs"
+  local missing=""
+  for m in $(grep -oE '"--exec", "omarchy-shell", "kettle", "[a-z]+"' Notifier.qml \
+             | sed 's/.*"\([a-z]*\)"$/\1/' | sort -u); do
+    grep -qE "^\s+function $m\(" Panel.qml || missing="$missing $m"
+  done
+  [[ -z $missing ]] \
+    && ok "every click action names a real IPC method" \
+    || no "every click action names a real IPC method" "missing:$missing"
+
   # A settings key the UI reads but the manifest never declares silently reads
   # its default forever, with no way for the user to change it.
   local undeclared=""
