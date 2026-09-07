@@ -303,6 +303,23 @@ Panel {
     function toggle() { root.toggle() }
     function count(): string { return String(store.liveCount) }
 
+    // Click target of the desktop notification. A toast can carry an argv but
+    // not a pot, so it names the pot by key and the lookup happens here, at
+    // click time, against the store as it is THEN. A pot the user already
+    // acknowledged (or whose agent has moved on) is gone by then; opening the
+    // panel shows what is actually live instead of jumping somewhere stale.
+    function jump(key: string): string {
+      for (var i = 0; i < store.pots.length; i++) {
+        var pot = store.pots[i]
+        if (pot.key !== key) continue
+        if (pot.state === "murky") break
+        root.jump(pot)
+        return "ok"
+      }
+      root.open()
+      return "gone"
+    }
+
     // Entry point for agents outside herdr. The payload is base64 so that a
     // command line, a prompt, or a cwd containing quotes cannot break the
     // transport.

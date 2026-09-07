@@ -304,6 +304,11 @@ flap, and coalescing that turns several near-simultaneous completions into one
 summary. The bar always shows true state regardless — notifications are the
 escalation, the bar is the truth.
 
+Clicking a toast jumps to its pot the same way clicking the row does; the
+summary toast opens the panel instead, since there is no single place to go.
+The pot is looked up at click time, so a toast for something you have already
+acknowledged opens the panel rather than jumping somewhere stale.
+
 ## Testing
 
 ```bash
