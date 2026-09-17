@@ -123,10 +123,11 @@ Panel {
         // Absolute path, resolved at install: a non-interactive ssh gets no
         // login shell, so a bare `herdr` fails with "command not found" —
         // silently, because execDetached discards output.
-        // paneId is regex-validated on ingest and herdrPath on load, so this
-        // interpolation is safe — but it runs on the remote, not here.
+        // paneId is regex-validated on ingest, herdrPath and session on load,
+        // so this interpolation is safe — but it runs on the remote, not here.
         "--", pot.host,
         (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
+          + (relay.sessionFor(pot.host) ? " --session " + relay.sessionFor(pot.host) : "")
       ])
       // The window to raise is the local terminal holding the ssh session.
       root.raise(root.remoteWindow || pot.host)
@@ -246,6 +247,7 @@ Panel {
       host: hostName
       pluginDir: root.pluginDir
       herdrPath: relay.herdrPathFor(hostName)
+      session: relay.sessionFor(hostName)
       Component.onCompleted: start()
       // Destruction now means the host left the registry, so its pots must go
       // with it — nothing else clears them.

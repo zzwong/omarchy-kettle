@@ -29,14 +29,20 @@ QtObject {
   readonly property string tokenDir: Quickshell.env("HOME") + "/.config/kettle/tokens"
   readonly property string hostDir: Quickshell.env("HOME") + "/.config/kettle/hosts"
 
-  // host -> { herdr: "/abs/path" }. Discovered once at install through a login
-  // shell, because every ssh we issue afterwards is non-interactive and gets
-  // no PATH setup.
+  // host -> { herdr: "/abs/path", session: "name" }. The path is discovered
+  // once at install through a login shell, because every ssh we issue
+  // afterwards is non-interactive and gets no PATH setup. An empty session
+  // means the host's default socket.
   property var hostInfo: ({})
 
   function herdrPathFor(host) {
     var info = hostInfo[host]
     return (info && info.herdr) ? info.herdr : ""
+  }
+
+  function sessionFor(host) {
+    var info = hostInfo[host]
+    return (info && info.session) ? info.session : ""
   }
 
   // token -> host. The FILENAME is the origin host; a payload never gets to
@@ -268,7 +274,8 @@ QtObject {
       'for f in "$d"/*; do [ -f "$f" ] || continue; ' +
       '  n=$(basename "$f"); ' +
       '  hp=$(sed -n "s/^herdr=//p" "$h/$n" 2>/dev/null | head -1); ' +
-      '  printf "%s\\t%s\\t%s\\n" "$n" "$(cat "$f")" "$hp"; done']
+      '  hs=$(sed -n "s/^session=//p" "$h/$n" 2>/dev/null | head -1); ' +
+      '  printf "%s\\t%s\\t%s\\t%s\\n" "$n" "$(cat "$f")" "$hp" "$hs"; done']
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -295,8 +302,15 @@ QtObject {
             hp = ""
           }
 
+          // Ends up on a remote command line: herdr's own charset or nothing.
+          var hs = (p.length > 3 ? p[3] : "")
+          if (hs.length > 0 && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(hs)) {
+            root.rejected("refusing suspicious herdr session from " + h)
+            hs = ""
+          }
+
           map[p[1]] = h
-          info[h] = { herdr: hp }
+          info[h] = { herdr: hp, session: hs }
         }
         root.hostInfo = info
         // Only reassign when the set actually differs. `tokens` is reloaded

