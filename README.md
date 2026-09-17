@@ -324,6 +324,9 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
 
 - Omarchy 4 ("Quattro") or newer — the Quickshell plugin architecture
 - Hyprland
+- bash 4 or newer, and python3 — every script here is one or the other
+- coreutils `base64` and procps `pgrep`, which the scripts shell out to
+- openssh, for remote hosts only — nothing local uses it
 - Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
 
 ## Known limitations

@@ -136,6 +136,15 @@ test_hook() {
   out=$(hook_emit 'not json at all')
   is "malformed stdin emits nothing" "$out" ""
 
+  # The session id is pasted into a path under STATE_DIR. The charset alone
+  # admits "." and "..", which name the state dir itself and its parent.
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"..","cwd":"/p"}')
+  is "a dot-only session id is rejected" "$out" ""
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":".hidden","cwd":"/p"}')
+  is "  and so is one that starts with a dot" "$out" ""
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"a.b-c_1","cwd":"/p"}')
+  is "  while dots inside an id still pass" "$(field "$out" state)" "working"
+
   is "hook always exits 0" "$(echo 'garbage' | bash "$ROOT/bin/kettle-agent-hook" >/dev/null 2>&1; echo $?)" "0"
 }
 
@@ -228,10 +237,118 @@ print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']
   is "  and remove drops the key entirely" \
      "$(python3 -c "import json;print('extensions' in json.load(open('$T/.pi/agent/settings.json')))")" "False"
 
+  # The .kettle-bak copy of a settings file is as secret as the file it copies,
+  # and nothing else cleaned it up.
+  printf '{"theme":"dark","apiKey":"sk-secret"}\n' > "$T/.pi/agent/settings.json"
+  chmod 600 "$T/.pi/agent/settings.json"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "the pi backup inherits the config's mode" \
+     "$(stat -c %a "$T/.pi/agent/settings.json.kettle-bak")" "600"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "  and remove takes the backup with it" \
+     "$(ls "$T/.pi/agent/" | grep -c kettle-bak)" "0"
+
   QWEN_HOME="$T/.qwen" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
   is "remove deletes grok's file" "$(ls "$T/.grok/hooks/" 2>/dev/null | wc -l)" "0"
   is "remove empties droid's top-level events" \
      "$(python3 -c "import json;print(json.load(open('$T/.factory/hooks.json')))")" "{}"
+
+  # ---- mode survives a write ----------------------------------------------
+  # These files hold API keys and are often 0600, but the temp file was written
+  # at the umask and os.replace carried 0644 onto the config.
+  local M; M=$(mktemp -d)
+  mkdir -p "$M/.claude"
+  printf '{"theme":"auto"}\n' > "$M/.claude/settings.json"
+  chmod 600 "$M/.claude/settings.json"
+  HOME="$M" CLAUDE_CONFIG_DIR="$M/.claude" CODEX_HOME="$M/.codex" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "a 0600 config is still 0600 after install" \
+     "$(stat -c %a "$M/.claude/settings.json")" "600"
+  # A stub on PATH makes the tool "present" without its config existing, which
+  # is the only way to exercise the file-creating branch on a bare machine.
+  local B; B=$(mktemp -d); printf '#!/bin/bash\n' > "$B/claude"; chmod +x "$B/claude"
+  HOME="$M" CLAUDE_CONFIG_DIR="$M/.fresh" CODEX_HOME="$M/.codex" PATH="$B:$PATH" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "  and a config the installer creates is not world-readable" \
+     "$(stat -c %a "$M/.fresh/settings.json")" "600"
+  rm -rf "$M" "$B"
+
+  # ---- remove is not bound to the clone that installed ---------------------
+  # The entry names an absolute path, so matching on it left a second clone's
+  # hook behind forever. Match the script name, as kettle-remote does.
+  local C; C=$(mktemp -d)
+  mkdir -p "$C/home/.claude"
+  cp -r "$ROOT/bin" "$ROOT/pi" "$C/"
+  printf '{"theme":"auto"}\n' > "$C/home/.claude/settings.json"
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$C/bin/kettle-install" >/dev/null 2>&1
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "a moved clone repoints its entry instead of doubling it" \
+     "$(python3 -c "
+import json;d=json.load(open('$C/home/.claude/settings.json'))
+print([h['command'] for e in d['hooks']['Stop'] for h in e['hooks']])")" \
+     "['$ROOT/bin/kettle-agent-hook']"
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$C/bin/kettle-install" --remove >/dev/null 2>&1
+  is "remove finds a hook installed from another clone" \
+     "$(cat "$C/home/.claude/settings.json" | tr -d ' \n')" '{"theme":"auto"}'
+  rm -rf "$C"
+
+  # ---- remove invents no events --------------------------------------------
+  # remove called setdefault on every event it looked at. A config carrying a
+  # Kettle entry for only some of them therefore came back with an empty list
+  # for each of the others, and the non-empty dict defeated the "hooks" cleanup.
+  local P; P=$(mktemp -d); mkdir -p "$P/.claude"
+  python3 -c "
+import json, sys
+json.dump({'theme': 'auto', 'hooks': {'Stop': [{'hooks': [
+    {'type': 'command', 'command': sys.argv[1], 'timeout': 5}]}]}},
+    open(sys.argv[2], 'w'))" "$ROOT/bin/kettle-agent-hook" "$P/.claude/settings.json"
+  HOME="$P" CLAUDE_CONFIG_DIR="$P/.claude" CODEX_HOME="$P/.codex" \
+    "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "removing a partial install leaves no empty event keys" \
+     "$(tr -d ' \n' < "$P/.claude/settings.json")" '{"theme":"auto"}'
+  rm -rf "$P"
+
+  # ---- install then remove round-trips every dialect -----------------------
+  # remove called setdefault on every event it looked at, so a config that had
+  # no hooks came back holding "hooks": {"SessionStart": [], ...}.
+  jnorm() { python3 -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1])),sort_keys=True))" "$1" 2>/dev/null; }
+  jstr()  { python3 -c "import json,sys;print(json.dumps(json.loads(sys.argv[1]),sort_keys=True))" "$1" 2>/dev/null; }
+  local R wrapped bare pi_seed seed
+  for seed in bare-config pre-existing-hook; do
+    if [[ $seed == bare-config ]]; then
+      wrapped='{"theme":"auto"}'
+      bare='{"theme":"auto"}'
+      pi_seed='{"theme":"dark"}'
+    else
+      wrapped='{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}'
+      bare='{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}'
+      pi_seed='{"theme":"dark","extensions":["/opt/other/ext.ts"]}'
+    fi
+    R=$(mktemp -d)
+    mkdir -p "$R/.claude" "$R/.codex" "$R/.qwen" "$R/.gemini" "$R/.factory" "$R/.pi/agent"
+    printf '%s\n' "$wrapped" > "$R/.claude/settings.json"
+    printf '%s\n' "$wrapped" > "$R/.codex/hooks.json"
+    printf '%s\n' "$wrapped" > "$R/.qwen/settings.json"
+    printf '%s\n' "$wrapped" > "$R/.gemini/settings.json"
+    printf '%s\n' "$bare"    > "$R/.factory/hooks.json"
+    printf '%s\n' "$pi_seed" > "$R/.pi/agent/settings.json"
+    for pass_mode in "" --remove; do
+      HOME="$R" CLAUDE_CONFIG_DIR="$R/.claude" CODEX_HOME="$R/.codex" QWEN_HOME="$R/.qwen" \
+        PI_CODING_AGENT_DIR="$R/.pi/agent" "$ROOT/bin/kettle-install" $pass_mode >/dev/null 2>&1
+    done
+    is "$seed: claude round-trips through remove" "$(jnorm "$R/.claude/settings.json")" "$(jstr "$wrapped")"
+    is "$seed: codex round-trips through remove"  "$(jnorm "$R/.codex/hooks.json")"     "$(jstr "$wrapped")"
+    is "$seed: qwen round-trips through remove"   "$(jnorm "$R/.qwen/settings.json")"   "$(jstr "$wrapped")"
+    is "$seed: gemini round-trips through remove" "$(jnorm "$R/.gemini/settings.json")" "$(jstr "$wrapped")"
+    is "$seed: droid round-trips through remove"  "$(jnorm "$R/.factory/hooks.json")"   "$(jstr "$bare")"
+    is "$seed: pi round-trips through remove"     "$(jnorm "$R/.pi/agent/settings.json")" "$(jstr "$pi_seed")"
+    is "$seed: grok's file is gone afterwards"    "$(ls "$R/.grok/hooks/" 2>/dev/null | wc -l)" "0"
+    is "$seed: no backup is left behind"          "$(ls -A "$R/.pi/agent/" | grep -c kettle-bak)" "0"
+    rm -rf "$R"
+  done
 
   export HOME="$RH"
   unset CLAUDE_CONFIG_DIR CODEX_HOME
