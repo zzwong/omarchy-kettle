@@ -144,14 +144,37 @@ Panel {
     raiser.running = true
   }
 
+  // Focus warps the pointer to the window centre; read it first and move it
+  // back in the same batch so there is no flicker.
   function focusWindow(addr) {
+    cursorReader.addr = addr
+    cursorReader.running = false
+    cursorReader.running = true
+  }
+
+  function focusWindowKeepingCursor(addr, x, y) {
     // Hyprland's dispatch API is Lua now: the old
     // `hyprctl dispatch focuswindow address:0x…` form is a parse error, and
     // hl.dispatch() wants a dispatcher object rather than a string.
-    Quickshell.execDetached([
-      "hyprctl", "dispatch",
-      "hl.dsp.focus({ window = \"address:" + addr + "\" })"
-    ])
+    var batch = "dispatch hl.dsp.focus({ window = \"address:" + addr + "\" })"
+    if (x !== null)
+      batch += " ; dispatch hl.dsp.cursor.move({ x = " + x + ", y = " + y + " })"
+    Quickshell.execDetached(["hyprctl", "--batch", batch])
+  }
+
+  Process {
+    id: cursorReader
+    property string addr: ""
+    command: ["hyprctl", "cursorpos"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        // No reading, no restore: focus still has to happen.
+        var at = String(text || "").trim().match(/^(-?\d+),\s*(-?\d+)$/)
+        root.focusWindowKeepingCursor(cursorReader.addr,
+          at ? at[1] : null, at ? at[2] : null)
+      }
+    }
   }
 
   Process {

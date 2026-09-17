@@ -37,6 +37,7 @@ STUB
   chmod +x "$tmp/omarchy-shell"
   : > "$tmp/out"
   KETTLE_TEST_OUT="$tmp/out" PATH="$tmp:$PATH" HYPRLAND_INSTANCE_SIGNATURE=test \
+    HERDR_PANE_ID= HERDR_ENV= \
     bash "$ROOT/bin/kettle-agent-hook" <<< "$payload" >/dev/null 2>&1
   # the hook double-backgrounds delivery; give it a moment to land
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s $tmp/out ]] && break; sleep 0.1; done
