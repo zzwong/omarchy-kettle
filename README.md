@@ -1,5 +1,9 @@
 # Kettle
 
+[![version](https://img.shields.io/github/manifest-json/v/zzwong/omarchy-kettle?label=version&color=blue)](manifest.json)
+[![ci](https://github.com/zzwong/omarchy-kettle/actions/workflows/ci.yml/badge.svg)](https://github.com/zzwong/omarchy-kettle/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes, fails, or needs you. Click a
 pot to land in the terminal it's running in.
