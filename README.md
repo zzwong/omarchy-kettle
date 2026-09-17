@@ -4,7 +4,7 @@ Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes, fails, or needs you. Click a
 pot to land in the terminal it's running in.
 
-![Kettle on the bar](docs/demo.png)
+![Kettle on the bar](preview.png)
 
 Sessions come from four sources: **herdr** (every agent it tracks, Pi
 included), hooks Kettle installs into **Claude Code, Codex, Qwen Code, Gemini
