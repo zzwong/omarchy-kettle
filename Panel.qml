@@ -301,13 +301,34 @@ Panel {
   // first arrow press lands on the top pot rather than moving off it.
   property int cursor: -1
 
-  onOpenedChanged: cursor = -1
+  onOpenedChanged: { cursor = -1; list.contentY = 0 }
 
   function moveCursor(delta) {
     var n = store.pots.length
     if (n === 0) { cursor = -1; return }
-    if (cursor < 0) { cursor = delta > 0 ? 0 : n - 1; return }
-    cursor = (cursor + delta + n) % n
+    if (cursor < 0) cursor = delta > 0 ? 0 : n - 1
+    else cursor = (cursor + delta + n) % n
+    scrollCursorIntoView()
+  }
+
+  // Keyboard only: a hovered row is visible already, and snapping the view
+  // would fight the wheel.
+  function scrollCursorIntoView() {
+    if (cursor < 0 || list.height <= 0) return
+    var kids = potColumn.children
+    for (var i = 0; i < kids.length; i++) {
+      var entry = kids[i]
+      if (entry.rowBottom === undefined || entry.index !== cursor) continue
+      // entry.y so a group's first row brings its host header along; the
+      // hints float over the edges, so leave room for them.
+      var top = entry.y - (aboveHint.visible ? aboveHint.height : 0)
+      var bottom = entry.rowBottom + (belowHint.visible ? belowHint.height : 0)
+      var last = Math.max(0, list.contentHeight - list.height)
+      if (top < list.contentY) list.contentY = Math.max(0, Math.min(top, last))
+      else if (bottom > list.contentY + list.height)
+        list.contentY = Math.max(0, Math.min(bottom - list.height, last))
+      return
+    }
   }
 
   function activateCursor() {
@@ -391,6 +412,30 @@ Panel {
     onPressed: function(b) { root.toggle() }
   }
 
+  // Uncapped: the card clamps this to the screen and the list absorbs the
+  // difference, so it must not read back the card's own height.
+  readonly property real desiredHeight: header.implicitHeight + Style.space(12)
+    + potColumn.implicitHeight
+    + (root.hasAnything ? Style.space(12) + footer.implicitHeight : 0)
+
+  readonly property var hiddenRows:
+    countHiddenRows(list.contentY, list.height, potColumn.implicitHeight)
+
+  // Pot rows only; host headers are not counted.
+  function countHiddenRows(top, viewport, listHeight) {
+    var out = { above: 0, below: 0 }
+    if (viewport <= 0 || listHeight <= viewport) return out
+    var bottom = top + viewport
+    var kids = potColumn.children
+    for (var i = 0; i < kids.length; i++) {
+      var entry = kids[i]
+      if (entry.rowBottom === undefined) continue
+      if (entry.rowBottom <= top + 0.5) out.above++
+      else if (entry.rowTop >= bottom - 0.5) out.below++
+    }
+    return out
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: button
@@ -399,7 +444,7 @@ Panel {
     open: root.opened
     focusTarget: keys
     contentWidth: panel.fittedContentWidth(Style.space(360))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentHeight: panel.fittedContentHeight(root.desiredHeight)
 
     PanelKeyCatcher {
       id: keys
@@ -412,63 +457,75 @@ Panel {
       }
       onActivateRequested: root.activateCursor()
 
-      Column {
-        id: column
+      // ---------- header ----------
+      Item {
+        id: header
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        spacing: Style.space(12)
+        implicitHeight: Math.max(title.implicitHeight, sub.implicitHeight)
 
-        // ---------- header ----------
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(title.implicitHeight, sub.implicitHeight)
-
-          Text {
-            id: title
-            text: "Kettle"
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Text {
-            id: sub
-            text: {
-              if (poller.serverDown) return "NO SESSION"
-              if (store.pots.length === 0) return "NOTHING COOKING"
-              return store.liveCount + " COOKING"
-            }
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1.2
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-
-        // ---------- empty state ----------
         Text {
-          visible: store.pots.length === 0
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: poller.serverDown
-            ? "No herdr server is running. Start one and pots will appear here."
-            : "Nothing is cooking. Long-running agents and commands show up here."
-          color: Qt.darker(root.bar.foreground, 1.5)
+          id: title
+          text: "Kettle"
+          color: root.bar.foreground
           font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
+          font.pixelSize: Style.font.title
+          font.bold: true
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
         }
 
-        // ---------- pots ----------
+        Text {
+          id: sub
+          text: {
+            if (poller.serverDown) return "NO SESSION"
+            if (store.pots.length === 0) return "NOTHING COOKING"
+            return store.liveCount + " COOKING"
+          }
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.2
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+        }
+      }
+
+      // ---------- pots ----------
+      Flickable {
+        id: list
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: header.bottom
+        anchors.topMargin: Style.space(12)
+        // Not anchored to footer.top: a hidden Column still reports its
+        // height, which would shorten the list by a footer that is not there.
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: footer.visible ? footer.height + Style.space(12) : 0
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        contentWidth: width
+        contentHeight: potColumn.implicitHeight
+
         Column {
-          width: parent.width
+          id: potColumn
+          width: list.width
           spacing: Style.space(2)
+
+          // ---------- empty state ----------
+          Text {
+            visible: store.pots.length === 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: poller.serverDown
+              ? "No herdr server is running. Start one and pots will appear here."
+              : "Nothing is cooking. Long-running agents and commands show up here."
+            color: Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
 
           Repeater {
             model: store.pots
@@ -479,6 +536,9 @@ Panel {
               required property int index
               width: parent.width
               spacing: Style.space(2)
+
+              readonly property real rowTop: entry.y + row.y
+              readonly property real rowBottom: rowTop + row.height
 
               // Host header above the first pot of each remote group. The
               // local group leads the sorted list and needs no label.
@@ -638,15 +698,67 @@ Panel {
             }
           }
         }
+      }
 
-        // ---------- footer ----------
+      // ---------- scroll hints ----------
+      Rectangle {
+        id: aboveHint
+        visible: root.hiddenRows.above > 0
+        anchors.top: list.top
+        anchors.right: list.right
+        anchors.rightMargin: Style.space(10)
+        width: aboveHintText.implicitWidth + Style.space(10)
+        height: aboveHintText.implicitHeight + Style.space(3)
+        radius: Style.space(4)
+        color: Color.popups.background
+
+        Text {
+          id: aboveHintText
+          text: root.hiddenRows.above + " above ▴"
+          color: Qt.darker(root.bar.foreground, 1.7)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 1.1
+          anchors.centerIn: parent
+        }
+      }
+
+      Rectangle {
+        id: belowHint
+        visible: root.hiddenRows.below > 0
+        anchors.bottom: list.bottom
+        anchors.right: list.right
+        anchors.rightMargin: Style.space(10)
+        width: belowHintText.implicitWidth + Style.space(10)
+        height: belowHintText.implicitHeight + Style.space(3)
+        radius: Style.space(4)
+        color: Color.popups.background
+
+        Text {
+          id: belowHintText
+          text: root.hiddenRows.below + " more ▾"
+          color: Qt.darker(root.bar.foreground, 1.7)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 1.1
+          anchors.centerIn: parent
+        }
+      }
+
+      // ---------- footer ----------
+      Column {
+        id: footer
+        visible: root.hasAnything
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        spacing: Style.space(12)
+
         PanelSeparator {
-          visible: store.pots.length > 0
           foreground: root.bar.foreground
         }
 
         Item {
-          visible: store.pots.length > 0
           width: parent.width
           implicitHeight: foot.implicitHeight
 
