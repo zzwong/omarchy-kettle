@@ -2,17 +2,17 @@
   "schemaVersion": 1,
   "id": "zzwong.kettle",
   "name": "Kettle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "zzwong",
   "license": "MIT",
-  "description": "Long-running work as pots on the bar: herdr agent sessions, with jump-to-pane and done/blocked notifications.",
+  "description": "Long-running agent work as simmering pots on your Omarchy bar: herdr, agent hooks, pi and remote hosts, with jump-to-terminal and notifications.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "Kettle",
-    "description": "What's cooking: agents and long-running commands",
+    "description": "What's cooking: agent sessions, local and remote",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",
