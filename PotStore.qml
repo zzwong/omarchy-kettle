@@ -445,12 +445,14 @@ QtObject {
   // pots clear this way: a blocked agent is still genuinely waiting on an
   // answer, so glancing at it must not silence the reminder.
   function seenWindow(addr) {
-    if (!addr) return
+    // A rejected address must not compare equal to a pot with no window.
+    var want = canonAddr(addr)
+    if (!want) return
     var map = Object.assign({}, hookPots)
     var changed = false
     for (var k in map) {
       var pot = map[k]
-      if (!pot || canonAddr(pot.windowAddr) !== canonAddr(addr)) continue
+      if (!pot || canonAddr(pot.windowAddr) !== want) continue
       if (pot.state === "ready" || pot.state === "burnt") {
         delete map[k]
         changed = true
@@ -475,10 +477,13 @@ QtObject {
   // Quickshell's toplevel model, and our own relay — and they were compared as
   // raw strings. One unprefixed source would silently break focus-clearing,
   // so every address is canonicalised here and nowhere else.
+  // The only validation an address gets before it is concatenated into a
+  // hyprctl Lua string; the agentEvent IPC does not sanitize. "" is no window.
   function canonAddr(a) {
     var s = String(a || "").trim().toLowerCase()
     if (s.length === 0) return ""
-    return s.indexOf("0x") === 0 ? s : "0x" + s
+    if (s.indexOf("0x") !== 0) s = "0x" + s
+    return /^0x[0-9a-f]{1,16}$/.test(s) ? s : ""
   }
 
   function basename(p) {

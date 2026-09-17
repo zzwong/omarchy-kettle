@@ -2,7 +2,7 @@
 # Kettle test suite. No framework, no dependencies beyond bash + python3.
 #
 #   test/run-tests           run everything
-#   test/run-tests hook      run one group (hook | install | relay)
+#   test/run-tests hook      run one group (hook | address | install | relay)
 #
 # The relay group needs a running Omarchy shell with the plugin loaded; it is
 # skipped automatically when the socket is absent, so the suite still passes
@@ -358,6 +358,26 @@ json.dump({'theme': 'auto', 'hooks': {'Stop': [{'hooks': [
 # --------------------------------------------------------------- relay tests
 SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kettle/kettle.sock"
 
+# Sends bytes with no line terminator and reports whether the server hung up
+# within a second. A relay that buffers happily prints "open".
+relay_flood() {
+  python3 -c "
+import socket,sys,time
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(2.0)
+s.connect(sys.argv[1])
+t0=time.time(); sent=0
+try:
+    while sent < 1048576 and time.time()-t0 < 1.0:
+        s.sendall(b'A'*8192); sent += 8192
+        time.sleep(0.002)
+except (BrokenPipeError, ConnectionResetError):
+    print('closed'); sys.exit()
+except Exception as e:
+    print('err:'+type(e).__name__); sys.exit()
+print('open')
+" "$SOCK"
+}
+
 relay_send() {
   python3 -c "
 import socket,sys
@@ -407,11 +427,21 @@ import base64,json
 print(base64.b64encode(json.dumps({'agent':'claude','id':'x','state':'nonsense','cwd':'/t'}).encode()).decode())")
   is "invalid state denied" "$(relay_send "v1 $tok $badstate")" "denied"
 
-  # An id outside the charset must not create a pot.
-  local badid; badid=$(python3 -c "
-import base64,json
-print(base64.b64encode(json.dumps({'agent':'claude','id':'../../etc/passwd','state':'working','cwd':'/t'}).encode()).decode())")
-  is "path-like id denied" "$(relay_send "v1 $tok $badid")" "denied"
+  # An id outside the charset must not create a pot. ".." passed the old
+  # charset — every character of it was allowed — and an id is a map key and a
+  # nonce, never a path segment.
+  local badid
+  for bad in '../../etc/passwd' '..' '.' '.hidden' '-rf'; do
+    badid=$(python3 -c "
+import base64,json,sys
+print(base64.b64encode(json.dumps({'agent':'claude','id':sys.argv[1],'state':'working','cwd':'/t'}).encode()).decode())" "$bad")
+    is "path-like id denied: $bad" "$(relay_send "v1 $tok $badid")" "denied"
+  done
+
+  # A client that never sends a newline used to be invisible to every check
+  # here: the parser handed over complete lines only, so maxLine was never
+  # consulted and the buffer grew for the three seconds the idle timer allowed.
+  is "a line that never terminates is cut off" "$(relay_flood)" "closed"
 
   # Clean up the pot we just created.
   local gone; gone=$(python3 -c "
@@ -419,6 +449,63 @@ import base64,json
 print(base64.b64encode(json.dumps({'agent':'claude','id':'testsuite1','state':'gone','cwd':'/t'}).encode()).decode())")
   relay_send "v1 $tok $gone" >/dev/null
   rm -f "$TD/kettle-test-host"
+}
+
+# --------------------------------------------------------------- address tests
+# canonAddr is the whole of the validation a window address gets, and the
+# string it returns is concatenated into a `hyprctl --batch` Lua expression.
+# Addresses reach it from the agentEvent IPC, which deliberately sanitizes
+# nothing, so this is the boundary. The real function is lifted out of
+# PotStore.qml rather than restated here.
+test_address() {
+  echo "address"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "address canonicalisation" "qs not on PATH"
+    return
+  fi
+
+  local T; T=$(mktemp -d)
+  {
+    printf 'import QtQuick\nimport Quickshell\nimport Quickshell.Io\n\nQtObject {\n  id: root\n'
+    sed -n '/^  function canonAddr(/,/^  }$/p' "$ROOT/PotStore.qml"
+    cat <<'HARNESS'
+  Component.onCompleted: {
+    var cases = [
+      ["plain", "0x5626f9d00350"],
+      ["unprefixed", "5626f9d00350"],
+      ["uppercase", "0X5626F9D00350"],
+      ["padded", "  0x1f  "],
+      ["empty", ""],
+      ["lua-injection", '0x1234" }) ; dispatch hl.dsp.exec_cmd({ cmd = "touch /tmp/pwned'],
+      ["not-hex", "0xnothex"],
+      ["over-64-bit", "0x0123456789abcdef0"],
+      ["trailing-shell", "0x1234;id"]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      console.log("ADDR:" + cases[i][0] + ":" + canonAddr(cases[i][1]))
+    killer.running = true
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+HARNESS
+  } > "$T/harness.qml"
+
+  local out
+  out=$(cd "$T" && timeout 20 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  addr() { printf '%s\n' "$out" | grep -o "ADDR:$1:.*" | head -1 | sed "s/^ADDR:$1://"; }
+
+  is "a plain address is kept"        "$(addr plain)" "0x5626f9d00350"
+  is "an unprefixed address is prefixed" "$(addr unprefixed)" "0x5626f9d00350"
+  is "case and padding are normalised" "$(addr uppercase)" "0x5626f9d00350"
+  is "  including whitespace"          "$(addr padded)" "0x1f"
+  is "nothing in, nothing out"         "$(addr empty)" ""
+  is "a Lua-injecting address is not an address" "$(addr lua-injection)" ""
+  is "a non-hex address is not an address"       "$(addr not-hex)" ""
+  is "an over-long address is not an address"    "$(addr over-64-bit)" ""
+  is "a shell-ish suffix is not an address"      "$(addr trailing-shell)" ""
 }
 
 # ----------------------------------------------------------------- structure
@@ -688,9 +775,19 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
      "$(fieldof "$(reach second-outage-fires-again)" fire)" "True"
 
   # The pure gate cannot see the QML wiring. Drive the real component with
-  # herdrPath empty, so canRun is false and no ssh is spawned.
+  # herdrPath empty, so canRun is false and the channel never opens. The only
+  # ssh the supervisor can still reach for is the master check, which a stub
+  # on PATH counts: its cadence is the thing being measured.
   local W; W=$(mktemp -d)
   cp "$ROOT/RemoteHerdrPoller.qml" "$ROOT/Reachability.js" "$W/"
+  mkdir -p "$W/bin"
+  cat > "$W/bin/ssh" <<STUB
+#!/bin/bash
+echo x >> "$W/ssh.log"
+exit 255
+STUB
+  chmod +x "$W/bin/ssh"
+  : > "$W/ssh.log"
   cat > "$W/wiring.qml" <<'EOF'
 import QtQuick
 import Quickshell
@@ -1011,6 +1108,32 @@ PY
     && ok "plugin ssh calls pin ControlMaster=no" \
     || no "plugin ssh calls pin ControlMaster=no" "found only ${guarded:-0}"
 
+  # The address group proves the behaviour, but it needs qs and so skips on
+  # CI — this grep is the only thing standing there.
+  sed -n '/^  function canonAddr(/,/^  }$/p' PotStore.qml | grep -q '0-9a-f' \
+    && ok "an address is charset-checked before it can reach hyprctl" \
+    || no "an address is charset-checked before it can reach hyprctl" \
+         "canonAddr has no hex check"
+  local unguarded=""
+  for f in $(grep -n '^  function focusWindow' Panel.qml | cut -d: -f1); do
+    sed -n "${f},$((f+4))p" Panel.qml | grep -q 'canonAddr' || unguarded="$unguarded:$f"
+  done
+  [[ -z $unguarded ]] \
+    && ok "both focus entry points canonicalise before dispatching" \
+    || no "both focus entry points canonicalise before dispatching" "lines$unguarded"
+
+  # $XDG_RUNTIME_DIR is environment, and the socket directory is created from
+  # it. A shell would re-parse whatever it holds.
+  sed -n '/property Process dirMaker/,/^  }/p' Relay.qml | grep -q '"bash"' \
+    && no "the socket directory is not made through a shell" "dirMaker still shells out" \
+    || ok "the socket directory is not made through a shell"
+
+  # The poller cannot see either of these by itself, and without them it has
+  # no third tier to drop to.
+  grep -q 'panelOpen: root.opened' Panel.qml && grep -q 'hasLive: store.hasLive' Panel.qml \
+    && ok "the herdr poller is told when nobody is watching" \
+    || no "the herdr poller is told when nobody is watching" "panelOpen/hasLive not wired"
+
   # uid must not be guessed: a misplaced socket fails silently. Comments may
   # legitimately mention the path while explaining why it is not used.
   grep -vE '^\s*(//|\*)' Relay.qml | grep -q 'run/user/1000' \
@@ -1056,7 +1179,7 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel address reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

@@ -148,16 +148,22 @@ Panel {
   // Focus warps the pointer to the window centre; read it first and move it
   // back in the same batch so there is no flicker.
   function focusWindow(addr) {
-    cursorReader.addr = addr
+    var a = store.canonAddr(addr)
+    if (!a) return
+    cursorReader.addr = a
     cursorReader.running = false
     cursorReader.running = true
   }
 
   function focusWindowKeepingCursor(addr, x, y) {
+    // This is the concatenation that would escape; the Lua string has no
+    // quoting of its own.
+    var a = store.canonAddr(addr)
+    if (!a) return
     // Hyprland's dispatch API is Lua now: the old
     // `hyprctl dispatch focuswindow address:0x…` form is a parse error, and
     // hl.dispatch() wants a dispatcher object rather than a string.
-    var batch = "dispatch hl.dsp.focus({ window = \"address:" + addr + "\" })"
+    var batch = "dispatch hl.dsp.focus({ window = \"address:" + a + "\" })"
     if (x !== null)
       batch += " ; dispatch hl.dsp.cursor.move({ x = " + x + ", y = " + y + " })"
     Quickshell.execDetached(["hyprctl", "--batch", batch])

@@ -25,7 +25,8 @@ QtObject {
   // wrong on any machine where the uid differs, and a silently misplaced
   // socket is worse than an obvious failure.
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-  readonly property string sockPath: runtimeDir + "/kettle/kettle.sock"
+  readonly property string sockDir: runtimeDir + "/kettle"
+  readonly property string sockPath: sockDir + "/kettle.sock"
   readonly property string tokenDir: Quickshell.env("HOME") + "/.config/kettle/tokens"
   readonly property string hostDir: Quickshell.env("HOME") + "/.config/kettle/hosts"
 
@@ -59,6 +60,9 @@ QtObject {
 
   readonly property int maxLine: 16384
   readonly property int maxPerSecond: 20
+  // Pre-auth budget for the whole socket: every event counts here first, so
+  // it is above the per-host limit times the hosts that may burst at once.
+  readonly property int maxUnauthPerSecond: 100
   readonly property int resolveTimeoutMs: 1500
 
   signal rejected(string reason)
@@ -80,10 +84,21 @@ QtObject {
   // already-running Process is a no-op, so a second caller arriving mid-read
   // used to overwrite the first's callback and silently strand that
   // connection until its idle timer fired.
+  // Bounded: every unknown token queues one callback. Past the bound the
+  // caller is answered from the tokens already loaded, so an unknown token is
+  // denied immediately.
   property var pendingLoads: []
+  readonly property int maxPendingLoads: 8
 
   function loadTokens(done) {
-    if (done) pendingLoads.push(done)
+    if (done) {
+      if (pendingLoads.length >= maxPendingLoads) {
+        root.rejected("token reloads backlogged")
+        done()
+        return
+      }
+      pendingLoads.push(done)
+    }
     if (!tokenLoader.running) tokenLoader.running = true
   }
 
@@ -102,14 +117,17 @@ QtObject {
   }
 
   // ---- rate limiting ------------------------------------------------------
-  function overRate(host) {
+  // "*" cannot collide with a host: token filenames are charset-checked.
+  readonly property string unauthKey: "*"
+
+  function overRate(key, limit) {
     var now = Date.now()
-    var arr = (rate[host] || []).filter(function(t) { return now - t < 1000 })
+    var arr = (rate[key] || []).filter(function(t) { return now - t < 1000 })
     arr.push(now)
     var next = Object.assign({}, rate)
-    next[host] = arr
+    next[key] = arr
     rate = next
-    return arr.length > maxPerSecond
+    return arr.length > (limit || maxPerSecond)
   }
 
   // ---- window resolution --------------------------------------------------
@@ -152,7 +170,8 @@ QtObject {
   function sanitize(raw, host) {
     if (!raw || typeof raw !== "object") return null
     var id = String(raw.id || "")
-    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return null
+    // No leading dot: "." and ".." are paths, not ids. Same rule as the hook.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return null
     var state = String(raw.state || "")
     if (validStates.indexOf(state) === -1) return null
 
@@ -178,6 +197,13 @@ QtObject {
   function handleLine(line, reply) {
     if (line.length > maxLine) { root.rejected("oversize"); return reply("denied") }
 
+    // Before the token is looked at: the per-host meter only runs once a
+    // token matches, so a flood of wrong tokens was unmetered.
+    if (overRate(unauthKey, maxUnauthPerSecond)) {
+      root.rejected("rate limit: unauthenticated")
+      return reply("denied")
+    }
+
     var parts = line.split(" ")
     if (parts.length !== 3 || parts[0] !== "v1") { root.rejected("malformed"); return reply("denied") }
 
@@ -195,7 +221,7 @@ QtObject {
   }
 
   function accept(host, b64, reply) {
-    if (overRate(host)) { root.rejected("rate limit: " + host); return reply("denied") }
+    if (overRate(host, maxPerSecond)) { root.rejected("rate limit: " + host); return reply("denied") }
 
     var raw
     try { raw = JSON.parse(Qt.atob(b64)) } catch (e) { root.rejected("bad payload"); return reply("denied") }
@@ -337,9 +363,15 @@ QtObject {
   // Ensure the runtime dir exists and is private before binding. Socket file
   // mode is umask-dependent and unix connect needs write permission, so the
   // directory is what actually enforces same-uid-only access.
+  // argv, not `bash -c`: the path comes from $XDG_RUNTIME_DIR.
   property Process dirMaker: Process {
     running: root.runtimeDir.length > 0
-    command: ["bash", "-c", 'mkdir -p "$(dirname "' + root.sockPath + '")" && chmod 700 "$(dirname "' + root.sockPath + '")"']
+    command: ["mkdir", "-p", "--", root.sockDir]
+    onExited: dirMode.running = true
+  }
+
+  property Process dirMode: Process {
+    command: ["chmod", "700", "--", root.sockDir]
     onExited: server.active = true
   }
 
@@ -350,18 +382,36 @@ QtObject {
     handler: Socket {
       id: conn
 
-      // A sender that never completes a line must not pin memory: there is no
-      // buffer cap on SplitParser, so bound the connection by time instead.
+      property bool handled: false
+
       property Timer idle: Timer {
         interval: 3000
         running: true
         onTriggered: conn.connected = false
       }
 
-      parser: SplitParser {
-        onRead: function(line) {
+      // StdioCollector, not SplitParser: SplitParser only hands over a
+      // complete line, so a client that never sent a newline grew its buffer
+      // unchecked (1MB accepted in 0.26s). This one exposes the partial
+      // buffer, which is what maxLine has to bound.
+      parser: StdioCollector {
+        id: inbox
+        waitForEnd: false
+        onDataChanged: {
+          if (conn.handled) return
+          var buf = String(inbox.text || "")
+          var nl = buf.indexOf("\n")
+          if (nl < 0) {
+            if (buf.length > root.maxLine) {
+              conn.handled = true
+              root.rejected("oversize, no line terminator")
+              conn.connected = false
+            }
+            return
+          }
+          conn.handled = true
           conn.idle.restart()
-          root.handleLine(String(line).trim(), function(ack) {
+          root.handleLine(buf.slice(0, nl).trim(), function(ack) {
             conn.write(ack + "\n")
             conn.flush()
             conn.connected = false
