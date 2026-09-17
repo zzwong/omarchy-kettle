@@ -71,9 +71,10 @@ outside herdr need the hooks.
 
 ## How each source works
 
-**herdr** — polled via `herdr api snapshot` every 2s (backing off to 15s when no
-server is running, and waking instantly when the socket reappears). One call
-returns every agent, so N sessions cost one process.
+**herdr** — polled via `herdr api snapshot` every 2s while the panel is open or
+a pot is cooking, 10s when neither is true, and 15s when no herdr server is
+running — waking instantly when the socket reappears, a pot goes live, or the
+panel opens. One call returns every agent, so N sessions cost one process.
 
 A herdr pot is named by, in order: the name from `herdr agent rename`, the
 agent's own terminal title (Claude Code sets this to a live task summary),

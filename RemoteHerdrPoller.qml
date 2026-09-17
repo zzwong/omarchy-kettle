@@ -45,8 +45,18 @@ QtObject {
   // signals; the delegate decides where they land.
 
   // Only run while the user already holds a connection. `ssh -O check` asks
-  // the local mux socket and touches no network, so this is a free probe.
+  // the local mux socket and touches no network — but it is still a spawn,
+  // and unconditionally every 5s it was 12 a minute per host (measured as
+  // children of the shell process). So it runs only while nothing else proves
+  // the host is there, and backs off while it keeps failing.
   property bool masterAlive: false
+  readonly property var checkLadderMs: [5000, 10000, 20000, 60000]
+  property int checkStep: 0
+  property double lastCheck: 0
+
+  // A real ssh round trip; on the 5s tick it ran twelve times a minute.
+  readonly property int wakeEveryMs: 60000
+  property double lastWake: 0
 
   property bool desiredRunning: false
   property bool streaming: false
@@ -231,12 +241,24 @@ QtObject {
     }
   }
 
+  // A streaming channel is multiplexed over the master, so its death lands
+  // in onExited; probing on top of that is pure spawn cost.
+  function maybeCheck(now) {
+    if (check.running) return
+    if (streaming && !stale && now - lastLine < heartbeatMs * 2) return
+    if (now - lastCheck < checkLadderMs[checkStep]) return
+    lastCheck = now
+    check.running = true
+  }
+
   // Cheap local probe: is the user still connected to this host?
   property Process check: Process {
     command: ["ssh", "-o", "ControlPath=" + Quickshell.env("HOME") + "/.ssh/cm-%r@%h:%p",
               "-O", "check", "--", root.host]
     onExited: function(code) {
       var alive = (code === 0)
+      root.checkStep = alive ? 0
+        : Math.min(root.checkStep + 1, root.checkLadderMs.length - 1)
       if (alive !== root.masterAlive) {
         root.masterAlive = alive
         root.log(alive ? "master up" : "master gone")
@@ -278,13 +300,14 @@ QtObject {
     running: true
     repeat: true
     onTriggered: {
-      if (!root.check.running) root.check.running = true
+      var now = Date.now()
+      root.maybeCheck(now)
 
       // A host that is partitioned, suspended, or asleep emits neither a
       // snapshot nor a down marker — so neither reconcile nor `down` can
       // clear its pots. Without this they would sit on the bar, possibly
       // still ticking as "simmering", until the shell reloaded.
-      var gate = Reachability.lostGate(root.reachState(), Date.now())
+      var gate = Reachability.lostGate(root.reachState(), now)
       if (gate.fire) {
         root.lostFired = true      // latch before emitting, not after
         root.log("unreachable for 2m, dropping its pots")
@@ -292,9 +315,11 @@ QtObject {
       }
 
       // Any sign of life ends an idle release.
-      if (root.idling && root.masterAlive && root.herdrPath.length > 0) {
+      if (root.idling && root.masterAlive && root.herdrPath.length > 0
+          && !root.wake.running && now - root.lastWake >= root.wakeEveryMs) {
         // Cheap re-probe: if the host has agents again, re-open.
-        if (!root.wake.running) root.wake.running = true
+        root.lastWake = now
+        root.wake.running = true
       }
 
       // Capability may have arrived after start(); pick it up here too.
@@ -304,7 +329,7 @@ QtObject {
 
       // Silence is ambiguous: a quiet channel and a dead one look identical
       // from here, so missed heartbeats are the only staleness signal.
-      var since = Date.now() - root.lastLine
+      var since = now - root.lastLine
       if (since > root.heartbeatMs * 2) {
         if (!root.stale) { root.stale = true; root.log("stale, no heartbeat") }
         if (since > root.heartbeatMs * 3) {
@@ -318,7 +343,7 @@ QtObject {
       // capability signals re-open the channel the moment the host is usable
       // again. Clearing desiredRunning here would silently kill the feature
       // for the rest of the shell's life.
-      if (root.emptySince > 0 && Date.now() - root.emptySince > root.idleTeardownMs) {
+      if (root.emptySince > 0 && now - root.emptySince > root.idleTeardownMs) {
         root.log("no agents for 10m, releasing channel")
         root.idling = true
         root.emptySince = 0

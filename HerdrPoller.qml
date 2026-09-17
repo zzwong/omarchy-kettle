@@ -14,7 +14,19 @@ QtObject {
   id: root
 
   property int activeInterval: 2000
+  // Panel closed and nothing live: measured, the 2s poll spawned 30 herdr
+  // processes a minute for a bar nobody was watching.
+  property int quietInterval: 10000
   property int idleInterval: 15000
+
+  property bool panelOpen: false
+  property bool hasLive: false
+
+  // A binding, not assignments in each state change: those drifted.
+  readonly property int pollInterval:
+      serverDown ? idleInterval
+    : (!panelOpen && !hasLive) ? quietInterval
+    : activeInterval
 
   // True while herdr has no server listening. Not an error state — most of the
   // time there simply is no session running.
@@ -47,10 +59,7 @@ QtObject {
     var list = Array.isArray(snap.agents) ? snap.agents : []
     var focused = String(snap.focused_pane_id || "")
 
-    if (serverDown) {
-      serverDown = false
-      timer.interval = activeInterval
-    }
+    if (serverDown) serverDown = false
 
     agents = list
     focusedPaneId = focused
@@ -60,15 +69,19 @@ QtObject {
   function markDown() {
     if (!serverDown) {
       serverDown = true
-      timer.interval = idleInterval
       agents = []
       focusedPaneId = ""
       root.serverLost()
     }
   }
 
+  // Changing a running Timer's interval restarts its countdown, so poll now
+  // rather than a full interval later.
+  onPanelOpenChanged: if (panelOpen) poll()
+  onHasLiveChanged: if (hasLive) poll()
+
   property Timer timer: Timer {
-    interval: root.idleInterval
+    interval: root.pollInterval
     running: true
     repeat: true
     triggeredOnStart: true
@@ -95,10 +108,7 @@ QtObject {
     watchChanges: true
     printErrors: false
     onFileChanged: {
-      if (root.serverDown) {
-        root.timer.interval = root.activeInterval
-        root.poll()
-      }
+      if (root.serverDown) root.poll()
     }
   }
 }

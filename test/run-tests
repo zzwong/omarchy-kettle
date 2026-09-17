@@ -836,8 +836,9 @@ QtObject {
   }
 }
 EOF
-  local wout
-  wout=$(cd "$W" && timeout 60 qs --no-color -p wiring.qml 2>&1)
+  local wout checks
+  wout=$(cd "$W" && PATH="$W/bin:$PATH" timeout 60 qs --no-color -p wiring.qml 2>&1)
+  checks=$(wc -l < "$W/ssh.log")
   rm -rf "$W"
   wire() { printf '%s\n' "$wout" | grep -o "WIRE:$1:.*" | head -1 | sed "s/^WIRE:$1://"; }
 
@@ -857,6 +858,15 @@ EOF
      "$(fieldof "$(wire afterline)" lostFired)" "False"
   is "  and marks the host seen" \
      "$(fieldof "$(wire afterline)" fresh)" "True"
+
+  # 18 seconds of supervisor ticks with the master permanently unreachable.
+  # Unconditional probing spends one ssh per 5s tick (3); backing off on
+  # consecutive failures spends 5s then 10s (2). A spawn per tick per host,
+  # forever, is the cost this bounds.
+  [[ ${checks:-0} -ge 1 && ${checks:-0} -le 2 ]] \
+    && ok "a dead master backs the check off instead of probing every tick" \
+    || no "a dead master backs the check off instead of probing every tick" \
+         "want 1-2 ssh checks in 18s, got ${checks:-0}"
 }
 
 

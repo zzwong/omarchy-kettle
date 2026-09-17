@@ -290,6 +290,8 @@ Panel {
 
   HerdrPoller {
     id: poller
+    panelOpen: root.opened
+    hasLive: store.hasLive
     onSnapshot: function(agents, focusedPaneId) { store.reconcile(agents) }
     onServerLost: store.clear()
   }
