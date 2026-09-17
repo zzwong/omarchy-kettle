@@ -30,6 +30,11 @@ set -uo pipefail
 # look identical to "herdr is down".
 HERDR=${KETTLE_HERDR:-herdr}
 
+# Named herdr session (`herdr --remote host --session NAME`) or empty for the
+# host's default socket. Empty must stay empty rather than becoming an empty
+# --session argument, which herdr rejects.
+SESSION=${KETTLE_SESSION:-}
+
 INTERVAL=${KETTLE_INTERVAL:-2}
 HEARTBEAT=${KETTLE_HEARTBEAT:-30}
 
@@ -39,7 +44,7 @@ prev=""
 last_beat=$SECONDS
 
 while :; do
-  raw=$("$HERDR" api snapshot 2>/dev/null)
+  raw=$("$HERDR" api snapshot ${SESSION:+--session "$SESSION"} 2>/dev/null)
 
   if [[ -z $raw ]]; then
     # Distinguish "herdr is gone" from "nothing changed". Hashing the error

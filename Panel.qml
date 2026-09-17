@@ -123,10 +123,11 @@ Panel {
         // Absolute path, resolved at install: a non-interactive ssh gets no
         // login shell, so a bare `herdr` fails with "command not found" —
         // silently, because execDetached discards output.
-        // paneId is regex-validated on ingest and herdrPath on load, so this
-        // interpolation is safe — but it runs on the remote, not here.
+        // paneId is regex-validated on ingest, herdrPath and session on load,
+        // so this interpolation is safe — but it runs on the remote, not here.
         "--", pot.host,
         (relay.herdrPathFor(pot.host) || "herdr") + " agent focus " + pot.paneId
+          + (relay.sessionFor(pot.host) ? " --session " + relay.sessionFor(pot.host) : "")
       ])
       // The window to raise is the local terminal holding the ssh session.
       root.raise(root.remoteWindow || pot.host)
@@ -147,16 +148,22 @@ Panel {
   // Focus warps the pointer to the window centre; read it first and move it
   // back in the same batch so there is no flicker.
   function focusWindow(addr) {
-    cursorReader.addr = addr
+    var a = store.canonAddr(addr)
+    if (!a) return
+    cursorReader.addr = a
     cursorReader.running = false
     cursorReader.running = true
   }
 
   function focusWindowKeepingCursor(addr, x, y) {
+    // This is the concatenation that would escape; the Lua string has no
+    // quoting of its own.
+    var a = store.canonAddr(addr)
+    if (!a) return
     // Hyprland's dispatch API is Lua now: the old
     // `hyprctl dispatch focuswindow address:0x…` form is a parse error, and
     // hl.dispatch() wants a dispatcher object rather than a string.
-    var batch = "dispatch hl.dsp.focus({ window = \"address:" + addr + "\" })"
+    var batch = "dispatch hl.dsp.focus({ window = \"address:" + a + "\" })"
     if (x !== null)
       batch += " ; dispatch hl.dsp.cursor.move({ x = " + x + ", y = " + y + " })"
     Quickshell.execDetached(["hyprctl", "--batch", batch])
@@ -246,6 +253,7 @@ Panel {
       host: hostName
       pluginDir: root.pluginDir
       herdrPath: relay.herdrPathFor(hostName)
+      session: relay.sessionFor(hostName)
       Component.onCompleted: start()
       // Destruction now means the host left the registry, so its pots must go
       // with it — nothing else clears them.
@@ -282,6 +290,8 @@ Panel {
 
   HerdrPoller {
     id: poller
+    panelOpen: root.opened
+    hasLive: store.hasLive
     onSnapshot: function(agents, focusedPaneId) { store.reconcile(agents) }
     onServerLost: store.clear()
   }

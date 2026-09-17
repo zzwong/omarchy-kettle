@@ -71,9 +71,10 @@ outside herdr need the hooks.
 
 ## How each source works
 
-**herdr** — polled via `herdr api snapshot` every 2s (backing off to 15s when no
-server is running, and waking instantly when the socket reappears). One call
-returns every agent, so N sessions cost one process.
+**herdr** — polled via `herdr api snapshot` every 2s while the panel is open or
+a pot is cooking, 10s when neither is true, and 15s when no herdr server is
+running — waking instantly when the socket reappears, a pot goes live, or the
+panel opens. One call returns every agent, so N sessions cost one process.
 
 A herdr pot is named by, in order: the name from `herdr agent rename`, the
 agent's own terminal title (Claude Code sets this to a live task summary),
@@ -225,6 +226,7 @@ Agent sessions on another machine appear on your bar, tagged with the host.
 
 ```bash
 bin/kettle-remote install <host>
+bin/kettle-remote install <host> --session <name>   # named herdr session
 bin/kettle-remote test <host>
 bin/kettle-remote status <host>
 bin/kettle-remote uninstall <host>   # removes the hook and token; reverses install
@@ -246,6 +248,25 @@ Host <host>
 there.) `ControlMaster` makes remote jumps reuse your existing connection
 (~48ms rather than ~100ms) and keeps the reverse forward alive after the
 session that created it exits.
+
+### Named herdr sessions
+
+`herdr --remote <host> --session <name>` runs the herdr server on `<host>`
+under `~/.config/herdr/sessions/<name>/herdr.sock`, not the host's default
+socket. Tell Kettle which one to read:
+
+```bash
+bin/kettle-remote install <host> --session <name>
+```
+
+The name is recorded next to herdr's path in
+`~/.config/kettle/hosts/<host>`, and every remote herdr call — the snapshot
+stream, the idle wake probe, and `agent focus` on a jump — carries
+`--session <name>`. Re-running `install` without the flag keeps the recorded
+session; `--no-session` (or `--session ""`) clears it and goes back to the
+default socket. `status <host>` prints the session in use. Names are limited
+to `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, checked when written and again when
+read, because the name lands on a remote command line.
 
 ### How it works, and what it costs
 
@@ -324,13 +345,20 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
 
 - Omarchy 4 ("Quattro") or newer — the Quickshell plugin architecture
 - Hyprland
+- bash 4 or newer, and python3 — every script here is one or the other
+- coreutils `base64` and procps `pgrep`, which the scripts shell out to
+- openssh, for remote hosts only — nothing local uses it
 - Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
 
 ## Known limitations
 
-- **herdr `--remote` is not supported.** It relocates the herdr server and
-  attaches a local TUI over ssh, but `herdr api snapshot` accepts no arguments —
-  the CLI can only query the local socket. Kettle sees nothing.
+- **herdr `--remote` is just a remote host with a named session.** It runs the
+  server on the far side under `--session <name>` and attaches a local TUI over
+  ssh, so install that host with the same
+  [`--session`](#named-herdr-sessions) and its agents appear. The jump target
+  is the *local* terminal running the `--remote` TUI, matched by title like
+  any other remote pot (see [`remoteWindow`](#remotewindow)) — Kettle has no
+  window address for a pane inside it.
 - **A blocked pot stays amber until the turn ends.** Neither agent emits an
   event when you *approve* a request, so there is nothing to transition on
   short of hooking every tool call.
