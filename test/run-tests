@@ -815,6 +815,30 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
     && ok "every click action names a real IPC method" \
     || no "every click action names a real IPC method" "missing:$missing"
 
+  # At 30 pots the panel once drew past the screen: rows must scroll inside
+  # something that clips, with the legend outside it.
+  local layout
+  layout=$(python3 - <<'PY'
+src = open("Panel.qml", encoding="utf-8").read().split("\n")
+start = next(i for i, l in enumerate(src) if l.strip() == "Flickable {")
+pad = " " * (len(src[start]) - len(src[start].lstrip()))
+end = next(i for i in range(start + 1, len(src)) if src[i] == pad + "}")
+block = "\n".join(src[start:end + 1])
+rest = "\n".join(src[:start] + src[end + 1:])
+found = []
+if "clip: true" in block: found.append("clips")
+if "model: store.pots" in block: found.append("rows-scroll")
+if "\u21b5 jump" in rest and "\u21b5 jump" not in block: found.append("legend-pinned")
+print(" ".join(found))
+PY
+)
+  is "the pot list clips its rows and leaves the legend pinned" \
+     "$layout" "clips rows-scroll legend-pinned"
+
+  sed -n '/function moveCursor(/,/^  }/p' Panel.qml | grep -q 'scrollCursorIntoView()' \
+    && ok "moving the cursor scrolls it into view" \
+    || no "moving the cursor scrolls it into view" "moveCursor never follows the cursor"
+
   # A settings key the UI reads but the manifest never declares silently reads
   # its default forever, with no way for the user to change it.
   local undeclared=""
