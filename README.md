@@ -5,26 +5,75 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Long-running agent work as simmering pots on your Omarchy bar. Glance to see
-what's cooking; get told when something finishes, fails, or needs you. Click a
-pot to land in the terminal it's running in.
+what's cooking; get told when something finishes or needs you. Click a pot to
+land in the terminal it's running in.
 
 ![Kettle on the bar](preview.png)
 
-Sessions come from four sources: **herdr** (every agent it tracks, Pi
-included), hooks Kettle installs into **Claude Code, Codex, Qwen Code, Gemini
-CLI, Factory droid and Grok Build**, an extension it installs into **pi**,
-`kettle-emit` for
-[anything else](#any-other-agent), and remote hosts over ssh.
-
-## Why
-
 Agent sessions are long, bursty, and easy to lose track of. You kick one off,
-switch workspace, and either forget it or compulsively tab back to check. Worse,
-an agent blocked on a permission prompt waits indefinitely while you do
-something else.
+switch workspace, and either forget it or keep tabbing back to check, while an
+agent blocked on a permission prompt waits indefinitely. The states that
+matter are *finished while you weren't looking* and *waiting on you right
+now*; Kettle surfaces exactly those.
 
-The state that matters is *finished while you weren't looking* and *waiting on
-you right now*. Kettle surfaces exactly those.
+Sessions come from five sources:
+
+- **[herdr](https://herdr.dev)**: every agent it tracks, with no setup
+- **Hooks** Kettle installs into Claude Code, Codex, Qwen Code, Gemini CLI,
+  Factory droid and Grok Build
+- **An extension** it installs into pi
+- **`kettle-emit`**, for [anything else](#any-other-agent)
+- **Remote hosts** over ssh
+
+## Requirements
+
+- Omarchy 4 ("Quattro") or newer, for the Quickshell plugin architecture
+- Hyprland
+- bash 4 or newer, and python3; every script here is one or the other
+- coreutils `base64` and procps `pgrep`, which the scripts shell out to
+- openssh, for remote hosts only; nothing local uses it
+- Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/zzwong/omarchy-kettle.git --enable
+~/.config/omarchy/plugins/zzwong.kettle/bin/kettle-install
+```
+
+The second line is separate because Omarchy's installer never executes plugin
+code. `kettle-install` merges hook entries into the config of every supported
+CLI it finds, in each one's own dialect. It is idempotent and preserves your
+existing hooks and settings; `--check` reports status without changing
+anything. herdr needs no setup and works fully without `kettle-install`; only
+sessions outside herdr need the hooks.
+
+Optionally bind the panel in `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + SHIFT + T", "Kettle", "omarchy-shell kettle toggle")
+```
+
+Update with `omarchy plugin update zzwong.kettle`. The hooks point at the
+plugin's own scripts, so updating moves them forward too.
+
+The scripts below live in `~/.config/omarchy/plugins/zzwong.kettle/bin/`;
+examples call them as `bin/...` from that directory.
+
+## Uninstall
+
+Undo the agent hooks and any remote hosts first, then remove the plugin. In
+the other order the hooks are left pointing at deleted scripts.
+
+```bash
+cd ~/.config/omarchy/plugins/zzwong.kettle
+bin/kettle-install --remove            # hook entries and the pi extension
+bin/kettle-remote uninstall <host>     # once per remote host, if any
+omarchy plugin remove zzwong.kettle
+```
+
+Then delete the `Host` block you added to `~/.ssh/config`, if any, and the
+leftover state in `~/.config/kettle/` and `~/.local/state/kettle/`.
 
 ## States
 
@@ -53,25 +102,34 @@ share `urgent` and are told apart by shape and by motion (only
 `needs-attention` pulses). That also survives colourblindness, a monochrome
 theme, and a 15-pixel bar slot.
 
-## Install
+## Keyboard
 
-```bash
-omarchy plugin add https://github.com/zzwong/omarchy-kettle.git --enable
-~/.config/omarchy/plugins/zzwong.kettle/bin/kettle-install
-```
+| Key | Action |
+|---|---|
+| `↑` `↓` | move the cursor, wrapping at both ends |
+| `↵` | jump to the selected pot |
+| `Tab` | switch to the adjacent bar panel |
+| `Esc` | close |
 
-Update with `omarchy plugin update zzwong.kettle`; remove with
-`omarchy plugin remove zzwong.kettle`.
+Hovering a row moves the keyboard cursor to it, so the mouse and the keyboard
+can never disagree about what `↵` would do.
 
-The second line is separate because Omarchy's installer never executes plugin
-code. `kettle-install` merges hook entries into the config of every supported
-CLI it finds, in each one's own dialect. It is idempotent, preserves your
-existing hooks and settings, and `--remove` reverses it — run that before
-`omarchy plugin remove`, which deletes the scripts the hooks point at.
-`--check` reports status without changing anything.
+The panel is also scriptable: `omarchy-shell kettle toggle|open|close`, and
+`omarchy-shell kettle count` prints the number of live pots.
 
-herdr needs no setup, and works fully without `kettle-install`; only sessions
-outside herdr need the hooks.
+## Notifications
+
+Fire only on transitions into `needs-attention`, `ready`, or `burnt`, and only
+when you plausibly cannot already see it. Three guards: focus suppression, a 60s
+per-pot cooldown so a flapping agent notifies once a minute rather than once a
+flap, and coalescing that turns several near-simultaneous completions into one
+summary. The bar always shows true state regardless — notifications are the
+escalation, the bar is the truth.
+
+Clicking a toast jumps to its pot the same way clicking the row does; the
+summary toast opens the panel instead, since there is no single place to go.
+The pot is looked up at click time, so a toast for something you have already
+acknowledged opens the panel rather than jumping somewhere stale.
 
 ## How each source works
 
@@ -139,8 +197,9 @@ kettle-emit --agent opencode --id "$SESSION" --state gone
 
 States are `register | working | blocked | finished | gone`. `--window`
 takes a Hyprland window address as the pot's jump target; without it the pot
-is informational. On a host set up by `kettle-remote install`, the same
-command posts through the ssh relay instead. `--model` slugs resolve to
+is informational. On a host set up by `kettle-remote install`, a copy of
+`bin/kettle-emit` posts through the ssh relay instead; `install` does not push
+it, so copy it there yourself. `--model` slugs resolve to
 display names as described under [Model](#model).
 
 ## Jumping to a window
@@ -205,24 +264,6 @@ There is no **context-usage readout**: the transcript exposes no
 context-window field, and the nearest candidate (`cache_read_input_tokens`)
 exceeds the window size after compaction. A number that looks authoritative
 and is wrong is worse than no number.
-
-## Keyboard
-
-| Key | Action |
-|---|---|
-| `↑` `↓` | move the cursor, wrapping at both ends |
-| `↵` | jump to the selected pot |
-| `Tab` | switch to the adjacent bar panel |
-| `Esc` | close |
-
-Hovering a row moves the keyboard cursor to it, so the mouse and the keyboard
-can never disagree about what `↵` would do.
-
-Bind the panel itself in `~/.config/hypr/bindings.lua`:
-
-```lua
-o.bind("SUPER + SHIFT + T", "Kettle", "omarchy-shell kettle toggle")
-```
 
 ## Remote hosts over ssh
 
@@ -309,7 +350,7 @@ That is irreducible, because the hook runs as that user.
 
 ## Settings
 
-All three are declared in the manifest, so the shell's widget settings UI
+All four are declared in the manifest, so the shell's widget settings UI
 offers them directly; they can also be set by hand on the widget's entry in
 `~/.config/omarchy/shell.json`:
 
@@ -319,40 +360,6 @@ offers them directly; they can also be set by hand on the widget's entry in
 | `notifications` | `true` | desktop notification on state changes |
 | `herdrWindow` | `""` | title/class substring identifying herdr's window |
 | `remoteWindow` | `""` | same, for the terminal holding your ssh session; empty matches the host name |
-
-## Notifications
-
-Fire only on transitions into `needs-attention`, `ready`, or `burnt`, and only
-when you plausibly cannot already see it. Three guards: focus suppression, a 60s
-per-pot cooldown so a flapping agent notifies once a minute rather than once a
-flap, and coalescing that turns several near-simultaneous completions into one
-summary. The bar always shows true state regardless — notifications are the
-escalation, the bar is the truth.
-
-Clicking a toast jumps to its pot the same way clicking the row does; the
-summary toast opens the panel instead, since there is no single place to go.
-The pot is looked up at click time, so a toast for something you have already
-acknowledged opens the panel rather than jumping somewhere stale.
-
-## Testing
-
-```bash
-./test/run-tests           # everything
-./test/run-tests hook      # one group: structure | coherence | hook | emit |
-                           #   install | guard | stream | pimodel | relay
-```
-
-No framework, no dependencies beyond bash and python3. The relay group needs a
-running shell with the plugin loaded and skips itself cleanly otherwise.
-
-## Requirements
-
-- Omarchy 4 ("Quattro") or newer — the Quickshell plugin architecture
-- Hyprland
-- bash 4 or newer, and python3 — every script here is one or the other
-- coreutils `base64` and procps `pgrep`, which the scripts shell out to
-- openssh, for remote hosts only — nothing local uses it
-- Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
 
 ## Known limitations
 
@@ -376,6 +383,17 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
   wrong one.
 - **herdr run durations are accurate to the 2s poll.** Hook-sourced pots are
   exact, so the same work can be reported a second apart by the two sources.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit style and tests. The
+suite needs only bash and python3:
+
+```bash
+./test/run-tests           # everything
+./test/run-tests hook      # one group: structure | coherence | hook | emit |
+                           #   install | guard | stream | pimodel | relay
+```
 
 ## License
 
