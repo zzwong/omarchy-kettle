@@ -366,6 +366,11 @@ running shell with the plugin loaded and skips itself cleanly otherwise.
 - **A blocked pot stays amber until the turn ends.** Neither agent emits an
   event when you *approve* a request, so there is nothing to transition on
   short of hooking every tool call.
+- **Subagents share their parent's pot.** An agent launched by another agent
+  (Codex running `pi -p`, Claude running `claude -p`) gets no pot of its own,
+  and neither does pi in print or json mode. Owners are found by process
+  name, so an agent that execs straight into another of its own kind reads
+  as one session.
 - **Hook pots do not survive a shell reload.** They live in memory; herdr pots
   repopulate from the next poll, agent pots reappear on their next event.
 - **herdr pots show a model only for pi.** The snapshot exposes no model or

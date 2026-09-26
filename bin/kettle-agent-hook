@@ -68,6 +68,57 @@ print("\x1f".join([
 # give us, so a herdr-managed pane must not produce a second pot.
 [[ -n ${HERDR_PANE_ID:-} || ${HERDR_ENV:-} == 1 ]] && exit 0
 
+# An agent launched by another agent (Codex running `pi -p`, Claude running
+# `claude -p`) is that agent's tool call, already covered by the parent's pot.
+# Harnesses also kill these runs before they report an end, so each one left
+# a pot simmering forever. Walk up from the hook: the first agent is this
+# session, and any further agent owns it. The exception is an agent directly
+# under one of its own kind, which is one session: Claude's bg-pty-host,
+# Gemini relaunching itself with a bigger heap.
+#
+# Both helpers answer in REPLY so the walk costs no forks.
+agent_name() {
+  local comm argv=()
+  read -r comm < "/proc/$1/comm" 2>/dev/null || return 1
+  # Node-based CLIs show up as the interpreter; the script names the agent.
+  if [[ $comm == node || $comm == bun || $comm == deno ]]; then
+    mapfile -d '' -t argv < "/proc/$1/cmdline" 2>/dev/null
+    comm=${argv[1]:-}; comm=${comm##*/}
+  fi
+  case $comm in
+    claude|codex|pi|gemini|qwen|droid|grok|opencode|amp|goose|cursor-agent)
+      REPLY=$comm ;;
+    *) return 1 ;;
+  esac
+}
+parent_pid() {
+  local stat
+  read -r stat < "/proc/$1/stat" 2>/dev/null || return 1
+  stat=${stat##*) }           # comm may contain spaces and parens
+  stat=${stat#* }             # drop the state field
+  REPLY=${stat%% *}
+}
+is_subagent() {
+  local p=$PPID self="" prev="" hops=0
+  while (( p > 1 && hops++ < 32 )); do
+    if agent_name "$p"; then
+      if [[ -z $self ]]; then
+        self=$REPLY
+      elif [[ $REPLY != "$self" || $prev != "$p" ]]; then
+        return 0
+      fi
+      parent_pid "$p" || return 1
+      prev=$REPLY p=$REPLY
+      continue
+    fi
+    prev=""
+    parent_pid "$p" || return 1
+    p=$REPLY
+  done
+  return 1
+}
+is_subagent && exit 0
+
 # The Claude-family tools (Claude Code, Codex, Qwen Code, Factory droid, Grok
 # Build) share most event names; Codex signals a waiting prompt with
 # PermissionRequest (as does Qwen), and Gemini CLI renamed the prompt/turn

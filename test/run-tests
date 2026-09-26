@@ -47,6 +47,34 @@ STUB
   python3 -c "import base64,sys;sys.stdout.write(base64.b64decode(sys.argv[1]).decode())" "$b64" 2>/dev/null
 }
 
+# Like hook_emit, but the hook runs at the bottom of a real process tree whose
+# agents are scripts named after them (a shebang script's comm is its file
+# name). The tree is started detached, so it reparents away from whatever
+# agent may be running this suite. Args: payload, then the tree as argv, in
+# which the word HOOK stands for the hook invocation.
+hook_tree() {
+  local payload=$1 tmp a; shift; tmp=$(mktemp -d)
+  cat > "$tmp/omarchy-shell" <<'STUB'
+#!/bin/bash
+printf '%s' "${3:-}" > "$KETTLE_TEST_OUT"
+STUB
+  for a in claude codex pi; do printf '#!/bin/bash\n"$@"\n:\n' > "$tmp/$a"; done
+  chmod +x "$tmp"/*
+  printf '%s' "$payload" > "$tmp/payload"
+  local argv=() w
+  for w in "$@"; do
+    if [[ $w == HOOK ]]; then argv+=(bash -c 'bash "$0" < "$1"; :' "$ROOT/bin/kettle-agent-hook" "$tmp/payload")
+    else argv+=("$w"); fi
+  done
+  : > "$tmp/out"
+  ( KETTLE_TEST_OUT="$tmp/out" PATH="$tmp:$PATH" HYPRLAND_INSTANCE_SIGNATURE=test \
+      HERDR_PANE_ID= HERDR_ENV= "${argv[@]}" >/dev/null 2>&1 & )
+  for _ in $(seq 1 20); do [[ -s $tmp/out ]] && break; sleep 0.1; done
+  local b64; b64=$(cat "$tmp/out" 2>/dev/null)
+  rm -rf "$tmp"
+  [[ -n $b64 ]] && echo emitted || echo silent
+}
+
 field() { python3 -c "
 import json,sys
 try: print(json.loads(sys.argv[1]).get(sys.argv[2],''))
@@ -161,6 +189,17 @@ test_hook() {
   is "  and so is one that starts with a dot" "$out" ""
   out=$(hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"a.b-c_1","cwd":"/p"}')
   is "  while dots inside an id still pass" "$(field "$out" state)" "working"
+
+  # Subagents: an agent another agent launched is part of the parent's pot.
+  ev='{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p","agent_type":"pi"}'
+  is "a top-level agent still gets a pot" "$(hook_tree "$ev" pi HOOK)" "emitted"
+  is "  pi run by Codex through a shell gets none" \
+     "$(hook_tree "$ev" codex bash -c '"$@"; :' _ pi HOOK)" "silent"
+  is "  nor when the shell exec'd straight into pi" "$(hook_tree "$ev" codex pi HOOK)" "silent"
+  is "  claude -p run by Claude's Bash tool gets none" \
+     "$(hook_tree "$ev" claude bash -c '"$@"; :' _ claude HOOK)" "silent"
+  is "  a claude directly under claude (bg-pty-host) is one session" \
+     "$(hook_tree "$ev" claude claude HOOK)" "emitted"
 
   is "hook always exits 0" "$(echo 'garbage' | bash "$ROOT/bin/kettle-agent-hook" >/dev/null 2>&1; echo $?)" "0"
 }
