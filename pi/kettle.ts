@@ -45,6 +45,10 @@ export default function (pi: ExtensionAPI) {
   // immediately, so a turn is never waiting on Kettle. A failure here must
   // stay invisible — a status widget is not worth interrupting a session for.
   const emit = async (event: string, ctx: any, extra: Record<string, string> = {}) => {
+    // Print and json modes (`pi -p`, `--mode json`) are scripted runs with no
+    // one watching and no window to jump to. Harnesses also kill them before
+    // session_shutdown fires, which left one orphaned pot per run.
+    if (ctx?.hasUI === false) return;
     try {
       const payload = JSON.stringify({
         hook_event_name: event,

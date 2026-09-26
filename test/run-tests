@@ -133,6 +133,23 @@ test_hook() {
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
 
+  # A headless pi run (print or json mode) is killed by its harness before
+  # session_shutdown, so any pot it opened would simmer forever.
+  if command -v node >/dev/null 2>&1; then
+    pi_calls() {
+      node --no-warnings --input-type=module -e "
+        const { default: ext } = await import('$ROOT/pi/kettle.ts');
+        const handlers = {}; let calls = 0;
+        ext({ on: (e, h) => (handlers[e] = h), exec: async () => { calls++; } });
+        await handlers.session_start({}, { hasUI: $1, cwd: '/p' });
+        console.log(calls);"
+    }
+    is "pi in print/json mode opens no pot" "$(pi_calls false)" "0"
+    is "  while interactive pi still does" "$(pi_calls true)" "1"
+  else
+    skipt "pi extension skips headless runs" "node not found"
+  fi
+
   out=$(hook_emit 'not json at all')
   is "malformed stdin emits nothing" "$out" ""
 
