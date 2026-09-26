@@ -79,8 +79,8 @@ leftover state in `~/.config/kettle/` and `~/.local/state/kettle/`.
 
 | State | Meaning | Ticking clock? |
 |---|---|---|
-| `simmering` | work in progress | yes — the tick is the signal |
-| `needs-attention` | blocked on an approval or question | yes — it's measuring **your** latency |
+| `simmering` | work in progress | yes; the tick is the signal |
+| `needs-attention` | blocked on an approval or question | yes; it's measuring **your** latency |
 | `ready` | finished, and you haven't looked yet | no |
 | `murky` | agent present but unclassifiable | never shown on the bar |
 
@@ -89,14 +89,14 @@ carries an exit status, so nothing can tell Kettle a run *failed* rather than
 finished. A `burnt` state is reserved for future shell-command pots, which do
 report exit codes; mentions of `burnt` below describe that reservation.
 
-A finished pot never ticks — a running counter on stopped work reads as
-"still going" — so terminal states show a coarse "just now / 5m ago" plus how
+A finished pot never ticks, because a running counter on stopped work reads
+as "still going". Terminal states show a coarse "just now / 5m ago" plus how
 long the run took.
 
 ### Colours
 
-Omarchy themes expose five palette roles — `foreground`, `background`, `accent`,
-`urgent`, `muted` — and there is no success or warning role. So state is carried
+Omarchy themes expose five palette roles (`foreground`, `background`, `accent`,
+`urgent`, `muted`), and there is no success or warning role. So state is carried
 by **glyph first, colour second**: `needs-attention` and `burnt` necessarily
 share `urgent` and are told apart by shape and by motion (only
 `needs-attention` pulses). That also survives colourblindness, a monochrome
@@ -123,7 +123,7 @@ Fire only on transitions into `needs-attention`, `ready`, or `burnt`, and only
 when you plausibly cannot already see it. Three guards: focus suppression, a 60s
 per-pot cooldown so a flapping agent notifies once a minute rather than once a
 flap, and coalescing that turns several near-simultaneous completions into one
-summary. The bar always shows true state regardless — notifications are the
+summary. The bar always shows true state regardless: notifications are the
 escalation, the bar is the truth.
 
 Clicking a toast jumps to its pot the same way clicking the row does; the
@@ -133,19 +133,19 @@ acknowledged opens the panel rather than jumping somewhere stale.
 
 ## How each source works
 
-**herdr** — polled via `herdr api snapshot` every 2s while the panel is open or
+**herdr** is polled via `herdr api snapshot` every 2s while the panel is open or
 a pot is cooking, 10s when neither is true, and 15s when no herdr server is
-running — waking instantly when the socket reappears, a pot goes live, or the
+running, waking instantly when the socket reappears, a pot goes live, or the
 panel opens. One call returns every agent, so N sessions cost one process.
 
 A herdr pot is named by, in order: the name from `herdr agent rename`, the
 agent's own terminal title (Claude Code sets this to a live task summary),
 then the bare agent name. herdr's `done` means *finished while its tab was
-unseen* — precisely the state this widget exists to show. Clicking a herdr
+unseen*, precisely the state this widget exists to show. Clicking a herdr
 pot focuses its tab, which flips it to `idle` and clears the pot on the next
 poll: the jump is the acknowledgement.
 
-**Hook-driven agents** — the agent reports its own lifecycle through hooks.
+**Hook-driven agents** report their own lifecycle through hooks.
 Nothing outside a terminal can observe what happens inside one: OSC escape
 sequences flow from the process to the terminal emulator and stop there. The
 agent telling you directly is the only honest source of state. The hook
@@ -156,7 +156,7 @@ wrong `ready`.
 
 ## pi
 
-pi is the one first-class agent with no hook config to install into — it loads
+pi is the one first-class agent with no hook config to install into; it loads
 TypeScript extensions instead. `kettle-install` registers `pi/kettle.ts` by
 absolute path in pi's `settings.json`, so `omarchy plugin update` moves the
 extension forward the way it does the hook.
@@ -165,11 +165,11 @@ The extension does not reimplement the hook. It shells out to
 `kettle-agent-hook` with the same payload the Claude and Codex hooks send, so
 window identity, session state, and the remote ssh relay all work unchanged.
 It reports on `agent_settled` rather than `agent_end`, because pi may still
-auto-retry, compact and retry, or run a queued follow-up after `agent_end` —
+auto-retry, compact and retry, or run a queued follow-up after `agent_end`, and
 its own docs point status integrations at the later event.
 
 Before this, a pi session was visible only *inside* herdr, which left the most
-ordinary way to run it — `pi` in a terminal — reporting nothing.
+ordinary way to run it (`pi` in a terminal) reporting nothing.
 
 pi exposes no event for its own approval prompt, so a pi session waiting on
 approval stays `simmering` rather than turning `needs-attention`, the same
@@ -181,10 +181,10 @@ Two paths, neither of which requires changing Kettle.
 
 **Inside herdr, it already works.** herdr detects some twenty agent TUIs and
 Kettle renders whatever it reports: a hand-drawn identity mark for most known
-agents, an initial in a ring for the rest — never a wrong logo.
+agents, an initial in a ring for the rest, never a wrong logo.
 
 **Outside herdr, post events with `bin/kettle-emit`** from whatever extension
-point the tool offers — a plugin, a wrapper, a shell alias. This covers tools
+point the tool offers: a plugin, a wrapper, a shell alias. This covers tools
 with plugin systems instead of hook configs (opencode, Amp), no hooks at all
 (goose), or hooks that don't currently fire (Cursor CLI):
 
@@ -215,8 +215,8 @@ republishes the title to the compositor. At session start the hook writes a
 nonce title, polls `hyprctl clients` until it appears (~50ms), caches the window
 address, and lets the agent repaint its title immediately after.
 
-This matters because single-process terminals — `ghostty --gtk-single-instance`,
-`foot --server`, kitty single-instance — report **the same PID for every
+This matters because single-process terminals (`ghostty --gtk-single-instance`,
+`foot --server`, kitty single-instance) report **the same PID for every
 window**, so walking the process tree cannot tell them apart. The nonce works
 regardless.
 
@@ -237,7 +237,7 @@ unset.
 
 The same problem for a remote host's herdr: the window to raise is the local
 terminal holding your ssh session. Unset, Kettle matches on the host name,
-which works because herdr *does* title that window — `{hostname}: {workspace}`
+which works because herdr *does* title that window: `{hostname}: {workspace}`
 by default, e.g. `framework: ~`. Set this only if the remote overrides
 `window_title` in its herdr config:
 
@@ -247,7 +247,7 @@ by default, e.g. `framework: ~`. Set this only if the remote overrides
 
 ## Model
 
-Each pot names the model beside the agent — `Claude Code · Opus 5`.
+Each pot names the model beside the agent: `Claude Code · Opus 5`.
 
 Codex and Qwen Code put `model` in the hook payload. Claude Code does not, so
 the hook reads the newest assistant message from the last 256 KB of the
@@ -289,7 +289,7 @@ Host <host>
     ControlPersist 10m
 ```
 
-(`install` prints this block with your real socket path — copy it from
+(`install` prints this block with your real socket path; copy it from
 there.) `ControlMaster` makes remote jumps reuse your existing connection
 (~48ms rather than ~100ms) and keeps the reverse forward alive after the
 session that created it exits.
@@ -305,8 +305,8 @@ bin/kettle-remote install <host> --session <name>
 ```
 
 The name is recorded next to herdr's path in
-`~/.config/kettle/hosts/<host>`, and every remote herdr call — the snapshot
-stream, the idle wake probe, and `agent focus` on a jump — carries
+`~/.config/kettle/hosts/<host>`, and every remote herdr call (the snapshot
+stream, the idle wake probe, and `agent focus` on a jump) carries
 `--session <name>`. Re-running `install` without the flag keeps the recorded
 session; `--no-session` (or `--session ""`) clears it and goes back to the
 default socket. `status <host>` prints the session in use. Names are limited
@@ -316,21 +316,21 @@ read, because the name lands on a remote command line.
 ### How it works, and what it costs
 
 **Remote agents** post events through the reverse forward into the unix socket
-the shell already listens on — no daemon, no systemd unit, nothing installed
-beyond one hook script. Window identity crosses ssh for free: the hook writes
-an OSC 2 title nonce, the terminal republishes the title, and the relay matches
-it locally (~400ms).
+the shell already listens on. There is no daemon, no systemd unit, and
+nothing installed beyond one hook script. Window identity crosses ssh for
+free: the hook writes an OSC 2 title nonce, the terminal republishes the
+title, and the relay matches it locally (~400ms).
 
 **Remote herdr** is streamed rather than polled. One long-lived ssh channel per
-host runs a loop on the far side that polls herdr's own unix socket — no
-crypto, no network — and emits a line only when state changes. Measured: a
+host runs a loop on the far side that polls herdr's own unix socket (no
+crypto, no network) and emits a line only when state changes. Measured: a
 per-poll `ssh host herdr api snapshot` costs ~4.5ms of local CPU and wakes the
 radio every interval; the channel costs 0ms over 26s and sent one line in 28s.
 
 **Security.** The relay authenticates a per-host bearer token whose *filename*
 is the origin host, so a payload can never claim to come from somewhere it
 does not. Host, window and focus are always derived locally, never trusted
-from the wire. Revoking a host is deleting its token file — which works even
+from the wire. Revoking a host is deleting its token file, which works even
 when the host is unreachable. Residual risk, stated plainly: anything running
 as your user on the remote can read that token and forge pots for that host.
 That is irreducible, because the hook runs as that user.
@@ -368,7 +368,7 @@ offers them directly; they can also be set by hand on the widget's entry in
   ssh, so install that host with the same
   [`--session`](#named-herdr-sessions) and its agents appear. The jump target
   is the *local* terminal running the `--remote` TUI, matched by title like
-  any other remote pot (see [`remoteWindow`](#remotewindow)) — Kettle has no
+  any other remote pot (see [`remoteWindow`](#remotewindow)); Kettle has no
   window address for a pane inside it.
 - **A blocked pot stays amber until the turn ends.** Neither agent emits an
   event when you *approve* a request, so there is nothing to transition on
@@ -376,8 +376,8 @@ offers them directly; they can also be set by hand on the widget's entry in
 - **Hook pots do not survive a shell reload.** They live in memory; herdr pots
   repopulate from the next poll, agent pots reappear on their next event.
 - **herdr pots show a model only for pi.** The snapshot exposes no model or
-  transcript path. pi keys its session logs by working directory — which the
-  snapshot does carry — so a local pi pot's model is tail-read from its
+  transcript path. pi keys its session logs by working directory, which the
+  snapshot does carry, so a local pi pot's model is tail-read from its
   newest session file. Codex keys sessions by date and a Claude cwd can host
   several concurrent sessions, so the same trick would sometimes name the
   wrong one.
