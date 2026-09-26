@@ -1,8 +1,8 @@
 #!/bin/bash
 # Post one lifecycle event to Kettle for an agent it has no hook for.
 #
-# Kettle ships hooks only for Claude Code and Codex, because only they have
-# hook systems to install into. Everything else — opencode, hermes, a build
+# Kettle ships hooks only for agents with a hook system or extension API to
+# install into. Everything else — opencode, hermes, a build
 # script, anything — can still be a pot: the widget's ingestion is a stable
 # contract, and this script is the whole integration. Call it from the tool's
 # own plugin/hook/wrapper at the moments that matter:

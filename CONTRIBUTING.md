@@ -10,7 +10,7 @@ reading it in two years.
   no `feat:`/`fix:` prefixes. Say what the change does, in English:
   `Name herdr pots by rename, then live title`.
 - **Body**: one blank line after the subject, wrapped at 80 columns. Explain
-  *why* — what was observed, what was considered, what the change trades
+  *why*: what was observed, what was considered, what the change trades
   away. The diff already says what changed.
 - If a claim in the message was verified (measured, captured, reproduced),
   say how. Unverified claims read the same as verified ones otherwise.
