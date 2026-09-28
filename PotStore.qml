@@ -467,6 +467,27 @@ QtObject {
     hookPots = map
   }
 
+  // A crashed agent may never emit SessionEnd. Once its terminal closes, a
+  // window-addressed hook pot cannot still be live. Pots without an address
+  // stay untouched: we have no evidence that their session ended.
+  function dropClosedHookWindows(addresses) {
+    var live = {}
+    for (var i = 0; i < addresses.length; i++) {
+      var addr = canonAddr(addresses[i])
+      if (addr) live[addr] = true
+    }
+    var map = Object.assign({}, hookPots)
+    var changed = false
+    for (var k in map) {
+      var pot = map[k]
+      if (pot && pot.windowAddr && !live[canonAddr(pot.windowAddr)]) {
+        delete map[k]
+        changed = true
+      }
+    }
+    if (changed) hookPots = map
+  }
+
   // Only herdr pots vanish when herdr does; hook-sourced sessions are
   // independent of it and must survive a herdr server restart.
   function clear() {

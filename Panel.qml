@@ -212,6 +212,14 @@ Panel {
     }
   }
 
+  Connections {
+    target: Hyprland.toplevels
+    function onValuesChanged() {
+      var addresses = Hyprland.toplevels.values.map(function(tl) { return tl.address })
+      store.dropClosedHookWindows(addresses)
+    }
+  }
+
   Relay {
     id: relay
     store: store
