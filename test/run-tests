@@ -564,6 +564,45 @@ HARNESS
   is "a shell-ish suffix is not an address"      "$(addr trailing-shell)" ""
 }
 
+# ---------------------------------------------------------- hook-window tests
+test_hookwindows() {
+  echo "hookwindows"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "closed hook windows" "qs not on PATH"
+    return
+  fi
+
+  local T; T=$(mktemp -d)
+  cp "$ROOT/PotStore.qml" "$T/"
+  cat > "$T/harness.qml" <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+
+QtObject {
+  id: root
+  property PotStore pots: PotStore {}
+  Component.onCompleted: {
+    pots.ingest({id: "closed", agent: "claude", state: "working", window: "0x1"})
+    pots.ingest({id: "open", agent: "claude", state: "working", window: "0x2"})
+    pots.ingest({id: "unknown", agent: "claude", state: "working", window: ""})
+    pots.dropClosedHookWindows(["2"])
+    console.log("WINDOWS:" + JSON.stringify(pots.hookList().map(function(p) { return p.key }).sort()))
+    killer.running = true
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+  local out
+  out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  is "closed windows drop their hook pots; open and unknown windows survive" \
+     "$(printf '%s\n' "$out" | grep -o 'WINDOWS:.*' | head -1 | sed 's/^WINDOWS://')" \
+     '["agent:open","agent:unknown"]'
+}
+
 # ----------------------------------------------------------------- structure
 test_structure() {
   echo "structure"
@@ -1245,7 +1284,7 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel address reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel address hookwindows reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
