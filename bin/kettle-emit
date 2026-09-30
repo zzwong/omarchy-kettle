@@ -16,13 +16,15 @@
 # finished, gone. The agent name is free-form: unknown agents get a neutral
 # mark and a capitalized label. --window takes a Hyprland window address and
 # becomes the pot's jump target; without it the pot is informational.
+# --navigation takes a versioned desktop target JSON object. It carries owner
+# identity, never commands; Kettle validates it against its shipped registry.
 #
 # On a remote host (installed by kettle-remote, so ~/.config/kettle/relay.conf
 # exists and there is no omarchy-shell) the event goes through the ssh reverse
 # forward instead, exactly like the shipped hook.
 set -uo pipefail
 
-agent="" id="" state="" cwd="" model="" message="" window="" focused="false" dry=0
+agent="" id="" state="" cwd="" model="" message="" window="" focused="false" dry=0 navigation=""
 
 usage() {
   sed -n 's/^#\( \|$\)//p' "$0" | sed -n '2,20p'
@@ -38,6 +40,7 @@ while (( $# > 0 )); do
     --model)   model=${2:-}; shift 2 ;;
     --message) message=${2:-}; shift 2 ;;
     --window)  window=${2:-}; shift 2 ;;
+    --navigation) navigation=${2:-}; shift 2 ;;
     --focused) focused="true"; shift ;;
     --dry-run) dry=1; shift ;;
     -h|--help) usage 0 ;;
@@ -60,7 +63,7 @@ esac
 
 b64=$(python3 -c '
 import base64, json, sys
-print(base64.b64encode(json.dumps({
+event = {
     "source":  "agent",
     "agent":   sys.argv[1],
     "id":      sys.argv[2],
@@ -70,8 +73,20 @@ print(base64.b64encode(json.dumps({
     "window":  sys.argv[6],
     "focused": sys.argv[7] == "true",
     "model":   sys.argv[8],
-}).encode()).decode())
-' "$agent" "$id" "$state" "$cwd" "$message" "$window" "$focused" "$model") || exit 1
+}
+if sys.argv[9]:
+    try:
+        if len(sys.argv[9].encode()) > 2048:
+            raise ValueError()
+        nav = json.loads(sys.argv[9])
+        if not isinstance(nav, dict):
+            raise ValueError()
+        event["navigation"] = nav
+    except ValueError:
+        print("kettle-emit: --navigation must be a JSON object of at most 2048 bytes", file=sys.stderr)
+        sys.exit(1)
+print(base64.b64encode(json.dumps(event).encode()).decode())
+' "$agent" "$id" "$state" "$cwd" "$message" "$window" "$focused" "$model" "$navigation") || exit 1
 
 if (( dry )); then
   printf '%s' "$b64" | base64 -d
