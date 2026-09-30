@@ -158,6 +158,19 @@ test_hook() {
   is "agent_type pi is not mistaken for claude" "$(field "$out" agent)" "pi"
   is "  and its model slug survives" "$(field "$out" model)" "deepseek-v4-flash"
 
+  local uuid="11111111-1111-4111-8111-111111111111" desktop_event
+  desktop_event="{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$uuid\",\"cwd\":\"/p\",\"agent_type\":\"codex\"}"
+  out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit "$desktop_event")
+  is "desktop Codex carries its thread UUID" "$(field "$out" desktopThread)" "$uuid"
+  is "desktop Codex does not use a shared window address" "$(field "$out" window)" ""
+  is "desktop window focus cannot establish chat focus" "$(field "$out" focused)" "False"
+  out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='' hook_emit "$desktop_event")
+  is "headless CLI Codex is not inferred to be desktop" "$(field "$out" desktopThread)" ""
+  out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit '{"hook_event_name":"UserPromptSubmit","session_id":"non-uuid","agent_type":"codex"}')
+  is "desktop navigation requires a UUID" "$(field "$out" desktopThread)" ""
+  out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit "${desktop_event/codex/claude}")
+  is "another agent cannot inherit desktop Codex navigation" "$(field "$out" desktopThread)" ""
+
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
 
@@ -601,6 +614,108 @@ EOF
   is "closed windows drop their hook pots; open and unknown windows survive" \
      "$(printf '%s\n' "$out" | grep -o 'WINDOWS:.*' | head -1 | sed 's/^WINDOWS://')" \
      '["agent:open","agent:unknown"]'
+}
+
+# ---------------------------------------------------------- desktop navigation
+test_desktop() {
+  echo "desktop"
+  python3 "$ROOT/test/desktop-navigation.py" \
+    && ok "desktop opener navigates, validates targets and reports failures" \
+    || no "desktop opener navigates, validates targets and reports failures"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "desktop store and jump behavior" "qs not on PATH"
+    return
+  fi
+  local T; T=$(mktemp -d)
+  cp "$ROOT/PotStore.qml" "$T/"
+  {
+    cat <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+QtObject {
+  id: root
+  property PotStore store: PotStore {}
+  property QtObject desktopJumper: QtObject {
+    property bool running: false
+    property var command: []
+    property var pot: null
+  }
+  property string pluginDir: "/plugin/"
+  property string herdrWindow: ""
+  property string remoteWindow: ""
+  property var relay: null
+  property string focused: ""
+  function close() {}
+  function raise(match) {}
+  function focusWindow(addr) { focused = addr }
+EOF
+    sed -n '/^  function jump(/,/^  }$/p' "$ROOT/Panel.qml"
+    cat <<'EOF'
+  Component.onCompleted: {
+    var a = "11111111-1111-4111-8111-111111111111"
+    var b = "11111111-1111-4111-8111-111111111112"
+    store.ingest({id: a, agent: "codex", state: "finished", desktopThread: a,
+                  window: "0x1234", focused: true})
+    store.ingest({id: b, agent: "codex", state: "finished", desktopThread: b,
+                  window: "0x1234"})
+    store.seenWindow("0x1234")
+    console.log("DESKTOP:shared-focus:" + store.hookList().length)
+    var first = store.hookPots["agent:" + a]
+    jump(first)
+    console.log("DESKTOP:route:" + JSON.stringify(desktopJumper.command))
+    console.log("DESKTOP:pending:" + store.hookList().length)
+    store.acknowledgeHookPot(first)
+    console.log("DESKTOP:only-selected:" + store.hookList().map(function(p) { return p.key }).join())
+    var second = store.hookPots["agent:" + b]
+    store.ingest({id: b, agent: "codex", state: "working", desktopThread: b})
+    store.acknowledgeHookPot(second)
+    console.log("DESKTOP:new-turn:" + store.hookPots["agent:" + b].state)
+    second = store.hookPots["agent:" + b]
+    jump(second)
+    store.acknowledgeHookPot(second)
+    console.log("DESKTOP:live:" + store.hookPots["agent:" + b].state)
+    store.ingest({id: "no-target", agent: "x", state: "finished"})
+    jump(store.hookPots["agent:no-target"])
+    console.log("DESKTOP:no-target:" + !!store.hookPots["agent:no-target"])
+    store.ingest({id: "terminal", agent: "codex", state: "finished", window: "0x4567"})
+    jump(store.hookPots["agent:terminal"])
+    console.log("DESKTOP:terminal:" + focused + ":" + !!store.hookPots["agent:terminal"])
+    var bad = a + "?host=evil"
+    store.ingest({id: bad, agent: "codex", state: "working", desktopThread: bad})
+    console.log("DESKTOP:invalid:" + store.hookPots["agent:" + bad].desktopThread)
+    store.ingest({id: a, agent: "codex", state: "working", desktopThread: b})
+    console.log("DESKTOP:mismatch:" + store.hookPots["agent:" + a].desktopThread)
+    store.ingest({id: a, agent: "codex", state: "working", desktopThread: a, host: "remote"})
+    console.log("DESKTOP:remote:" + store.hookPots["agent:remote:" + a].desktopThread)
+    store.ingest({id: a, agent: "claude", state: "working", desktopThread: a})
+    console.log("DESKTOP:wrong-agent:" + store.hookPots["agent:" + a].desktopThread)
+    killer.running = true
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+  } > "$T/harness.qml"
+  local out
+  out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  desktop_result() { printf '%s\n' "$out" | sed -n "s/.*DESKTOP:$1://p" | head -1; }
+  is "app focus acknowledges neither desktop chat" "$(desktop_result shared-focus)" "2"
+  is "desktop jump uses its thread UUID" "$(desktop_result route)" \
+     '["/plugin/bin/kettle-codex-jump","11111111-1111-4111-8111-111111111111"]'
+  is "pending navigation leaves both chats intact" "$(desktop_result pending)" "2"
+  is "success acknowledges only the selected chat" "$(desktop_result only-selected)" \
+     "agent:11111111-1111-4111-8111-111111111112"
+  is "a stale opener cannot dismiss a new turn" "$(desktop_result new-turn)" "simmering"
+  is "navigation does not dismiss live work" "$(desktop_result live)" "simmering"
+  is "a missing target does not dismiss a finished pot" "$(desktop_result no-target)" "true"
+  is "terminal navigation still focuses and acknowledges" "$(desktop_result terminal)" "0x4567:false"
+  is "invalid desktop targets are rejected on ingest" "$(desktop_result invalid)" ""
+  is "a desktop target must identify its own session" "$(desktop_result mismatch)" ""
+  is "remote input cannot navigate local desktop chats" "$(desktop_result remote)" ""
+  is "other agents cannot claim desktop navigation" "$(desktop_result wrong-agent)" ""
 }
 
 # ----------------------------------------------------------------- structure
@@ -1284,7 +1399,7 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel address hookwindows reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel address hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

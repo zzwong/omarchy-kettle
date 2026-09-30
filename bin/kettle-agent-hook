@@ -196,6 +196,16 @@ fi
 addr_file="$STATE_DIR/$sid"
 resolved_marker="$STATE_DIR/$sid.resolved"
 
+# Desktop chats share an app-server and an OS window, with no terminal to
+# identify by OSC. The app's URL handler takes a thread UUID, not a pane id.
+# Do not infer desktop ownership merely from a missing tty: headless CLI and
+# remote sessions have no tty either.
+desktop_thread=""
+if (( ! REMOTE )) && [[ $agent == codex && ${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-} == "Codex Desktop" \
+    && $sid =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  desktop_thread=$sid
+fi
+
 # ---- window identity -------------------------------------------------------
 # Resolved once per session and cached; a Hyprland window address is stable for
 # the window's lifetime. Claude overwrites the title on its next redraw, which
@@ -247,7 +257,10 @@ for c in cs:
   fi
 }
 
-if (( REMOTE )); then
+if [[ -n $desktop_thread ]]; then
+  # A focused app window does not establish which of its chats is visible.
+  addr=""; focused=false
+elif (( REMOTE )); then
   # No hyprctl here — the title is the only thing that crosses ssh, and the
   # relay watches for it on the other side.
   if [[ ! -f $resolved_marker && $state != "gone" ]]; then
@@ -350,8 +363,9 @@ print(base64.b64encode(json.dumps({
     "window":  sys.argv[5],
     "focused": sys.argv[6] == "true",
     "model":   sys.argv[8],
+    "desktopThread": sys.argv[9],
 }).encode()).decode())
-' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" 2>/dev/null)
+' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" "$desktop_thread" 2>/dev/null)
 
 [[ -z $b64 ]] && exit 0
 
