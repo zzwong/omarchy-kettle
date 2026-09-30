@@ -362,7 +362,7 @@ fi
 # ---- emit ------------------------------------------------------------------
 b64=$(python3 -c '
 import base64, json, sys
-print(base64.b64encode(json.dumps({
+event = {
     "source":  "agent",
     "agent":   sys.argv[7],
     "id":      sys.argv[1],
@@ -375,7 +375,11 @@ print(base64.b64encode(json.dumps({
     "desktopThread": sys.argv[9],
     "rexSession": sys.argv[10],
     "rexBlock": sys.argv[11],
-}).encode()).decode())
+}
+if sys.argv[9]:
+    event["navigation"] = {"version": 1, "kind": "desktop-chat",
+        "app": "codex-desktop", "instance": "default", "threadId": sys.argv[9]}
+print(base64.b64encode(json.dumps(event).encode()).decode())
 ' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" "$desktop_thread" \
   "$rex_session" "$rex_block" 2>/dev/null)
 
