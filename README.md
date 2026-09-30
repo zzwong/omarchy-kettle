@@ -6,7 +6,7 @@
 
 Long-running agent work as simmering pots on your Omarchy bar. Glance to see
 what's cooking; get told when something finishes or needs you. Click a pot to
-land in the terminal it's running in.
+land in its terminal or Codex desktop chat.
 
 ![Kettle on the bar](preview.png)
 
@@ -32,6 +32,7 @@ Sessions come from five sources:
 - bash 4 or newer, and python3; every script here is one or the other
 - coreutils `base64` and procps `pgrep`, which the scripts shell out to
 - openssh, for remote hosts only; nothing local uses it
+- `xdg-open` and the app's `codex://` URL handler, for Codex desktop navigation
 - Optional: [herdr](https://herdr.dev) and/or any supported agent CLI
 
 ## Install
@@ -220,6 +221,19 @@ This matters because single-process terminals (`ghostty --gtk-single-instance`,
 window**, so walking the process tree cannot tell them apart. The nonce works
 regardless.
 
+Codex sessions started by the Codex/ChatGPT desktop app have no terminal.
+Their hooks carry the app's `Codex Desktop` origin marker; Kettle keeps the
+thread UUID and opens `codex://threads/<uuid>` through the registered URL
+handler, then raises the app's Hyprland window. This requires the desktop
+app's `codex://` handler (`xdg-open`) to be installed. Terminal Codex sessions
+continue to use the terminal title nonce.
+
+Desktop chats share one window, so window focus alone cannot acknowledge
+them. Clicking a finished chat acknowledges only that chat after the URL
+opener and window lookup succeed; an opener failure keeps its pot. With
+multiple desktop windows, Kettle uses the app window activated by the URL
+handler rather than guessing.
+
 ### `herdrWindow`
 
 herdr sets no window title of its own, so on a single-process terminal there is
@@ -397,7 +411,7 @@ suite needs only bash and python3:
 ```bash
 ./test/run-tests           # everything
 ./test/run-tests hook      # one group: structure | coherence | hook | emit |
-                           #   install | guard | stream | pimodel | relay
+                           #   install | guard | stream | pimodel | desktop | relay
 ```
 
 ## License

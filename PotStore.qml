@@ -271,6 +271,8 @@ QtObject {
   // from "finished while you watched".
   function ingest(ev) {
     if (!ev || !ev.id) return
+    var desktopThread = ev.agent === "codex" && !ev.host && ev.desktopThread === ev.id
+      ? canonDesktopThread(ev.desktopThread) : ""
     var map = Object.assign({}, hookPots)
     // Host-scoped: two machines can hand out the same session id, and a
     // remote pot must never overwrite a local one.
@@ -285,7 +287,7 @@ QtObject {
       case "blocked":  state = "needs-attention"; break
       case "finished":
         // Seen it already? Then there is nothing to report.
-        if (ev.focused === true) {
+        if (ev.focused === true && !desktopThread) {
           delete map[key]
           hookPots = map
           if (was) root.potChanged({ key: key, state: "" }, was.state)
@@ -317,7 +319,10 @@ QtObject {
       since: (was && was.state === state) ? was.since : now,
       seq: -1,
       paneId: "",
-      windowAddr: canonAddr(ev.window),
+      // Desktop chats share a window. Window focus must not acknowledge all
+      // of them, or suppress completion for a chat that was never opened.
+      windowAddr: desktopThread ? "" : canonAddr(ev.window),
+      desktopThread: desktopThread,
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       message: String(ev.message || "").slice(0, 160),
@@ -467,6 +472,13 @@ QtObject {
     hookPots = map
   }
 
+  function acknowledgeHookPot(pot) {
+    var current = pot && hookPots[pot.key]
+    // Opening a desktop URL is asynchronous; another turn may have started
+    // or finished before the opener returns. Acknowledge only this snapshot.
+    if (current && current === pot && !isLive(current.state)) dropHookPot(pot.key)
+  }
+
   // A crashed agent may never emit SessionEnd. Once its terminal closes, a
   // window-addressed hook pot cannot still be live. Pots without an address
   // stay untouched: we have no evidence that their session ended.
@@ -505,6 +517,11 @@ QtObject {
     if (s.length === 0) return ""
     if (s.indexOf("0x") !== 0) s = "0x" + s
     return /^0x[0-9a-f]{1,16}$/.test(s) ? s : ""
+  }
+
+  function canonDesktopThread(id) {
+    var s = String(id || "")
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : ""
   }
 
   function basename(p) {

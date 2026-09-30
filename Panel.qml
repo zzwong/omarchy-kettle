@@ -102,11 +102,21 @@ Panel {
     if (!pot) return
     root.close()
 
-    // Hook-sourced sessions carry their own window address, resolved once at
-    // SessionStart via an OSC 2 title nonce. No herdr involved, and no
-    // resolver subprocess needed.
+    // Terminal hooks carry a window address resolved via an OSC 2 title
+    // nonce; desktop hooks carry a chat UUID for the app's URL handler.
     if (pot.source === "agent") {
-      if (pot.windowAddr) focusWindow(pot.windowAddr)
+      if (pot.desktopThread) {
+        if (desktopJumper.running) return
+        desktopJumper.pot = pot
+        desktopJumper.command = [root.pluginDir + "bin/kettle-codex-jump", pot.desktopThread]
+        desktopJumper.running = true
+        return
+      }
+      if (!pot.windowAddr) {
+        console.warn("kettle: this session has no navigation target")
+        return
+      }
+      focusWindow(pot.windowAddr)
       // Only a finished pot is dismissed by looking at it. A session that is
       // still working stays on the bar after you jump to it — clearing it
       // would hide live work behind a single click.
@@ -137,6 +147,24 @@ Panel {
     if (!pot.paneId) return
     Quickshell.execDetached(["herdr", "agent", "focus", pot.paneId])
     root.raise(root.herdrWindow)
+  }
+
+  Process {
+    id: desktopJumper
+    property var pot: null
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var addr = store.canonAddr(String(text || "").trim())
+        if (!addr) return
+        root.focusWindow(addr)
+        store.acknowledgeHookPot(desktopJumper.pot)
+      }
+    }
+    onExited: function(code) {
+      if (code !== 0) console.warn("kettle: cannot open Codex desktop chat; keeping its pot")
+      desktopJumper.pot = null
+    }
   }
 
   function raise(match) {
