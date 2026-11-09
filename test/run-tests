@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kettle test suite. No framework, no dependencies beyond bash + python3.
+# Kettle test suite. No framework. Bash + python3; Node for portable JS tests.
 #
 #   test/run-tests           run everything
 #   test/run-tests hook      run one group (hook | address | install | relay)
@@ -1399,7 +1399,53 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel address hookwindows desktop reachability hostmodel relay})
+# ------------------------------------------------------- notification tests
+# Extracts production methods and the pot-list binding, not copied policy.
+# Signals, bindings, clocks, Timer and notification transport are simulated;
+# this portable group does not replace native QML or live-shell qualification.
+test_notifications() {
+  echo "notifications"
+  if ! command -v node >/dev/null 2>&1; then
+    if [[ ${CI:-} == true ]]; then
+      no "portable notification regressions" "Node is required for this CI group"
+    else
+      skipt "portable notification regressions" "node not on PATH"
+    fi
+    return
+  fi
+  local out status=0 result name count=0
+  out=$(node "$ROOT/test/notifications.cjs" 2>&1) || status=$?
+  while IFS=$'\t' read -r result name; do
+    case "$result" in
+      PASS) ok "$name"; count=$((count+1)) ;;
+      FAIL) no "$name"; count=$((count+1)) ;;
+    esac
+  done < <(printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    report = json.load(sys.stdin)
+    results = report["results"]
+    assert isinstance(results, list) and results
+    lines = []
+    for r in results:
+        assert type(r["pass"]) is bool and isinstance(r["name"], str)
+        lines.append(("PASS" if r["pass"] else "FAIL") + "\t" + r["name"]
+                     + (": " + r["error"] if not r["pass"] else ""))
+    assert report["total"] == len(results)
+    assert report["passed"] == sum(r["pass"] for r in results)
+    assert report["failed"] == len(results) - report["passed"]
+    print("\n".join(lines))
+except (ValueError, KeyError, TypeError, AssertionError):
+    pass
+')
+  if ((count == 0)); then
+    no "notification harness returned results" "$out"
+  elif ((status != 0)); then
+    no "notification harness exited successfully" "exit $status"
+  fi
+}
+
+groups=(${1:-structure coherence hook emit install guard stream pimodel notifications address hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

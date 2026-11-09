@@ -21,6 +21,16 @@ QtObject {
 
   property var lastFired: ({})       // key+state -> timestamp
   property var pending: []
+  // Resolve delayed candidates against the store at dispatch time. Object
+  // snapshots can outlive an acknowledgment, a removed session or a new turn.
+  property var currentPots: []
+
+  onEnabledChanged: {
+    if (!enabled) {
+      pending = []
+      if (settle) settle.stop()
+    }
+  }
 
   // Injected by Panel.qml so the glyph set lives in exactly one place.
   property string glyphAttention: ""
@@ -33,9 +43,18 @@ QtObject {
     return glyphReady
   }
 
+  function isFocused(pot) {
+    return (pot.paneId && pot.paneId === focusedPaneId)
+      || (pot.windowAddr && focusedWindow && pot.windowAddr === focusedWindow)
+  }
+
   function consider(pot, fromState) {
-    if (!enabled) return
     if (!pot) return
+
+    // A newer transition replaces this key even if it is no longer eligible
+    // to notify. In particular, never count blocked and ready as two pots.
+    pending = pending.filter(function(item) { return item.key !== pot.key })
+    if (!enabled) return
 
     var s = pot.state
     if (s !== "needs-attention" && s !== "ready" && s !== "burnt") return
@@ -46,8 +65,7 @@ QtObject {
 
     // You are looking straight at it — by pane (herdr) or by window (hook,
     // remote). Checking only the pane silently exempted every non-herdr pot.
-    if (pot.paneId && pot.paneId === focusedPaneId) return
-    if (pot.windowAddr && focusedWindow && pot.windowAddr === focusedWindow) return
+    if (isFocused(pot)) return
 
     var stamp = pot.key + ":" + s
     var now = Date.now()
@@ -62,8 +80,24 @@ QtObject {
   }
 
   function flush() {
-    var items = pending
+    var candidates = pending
     pending = []
+    if (!enabled) return
+
+    var items = []
+    for (var c = 0; c < candidates.length; c++) {
+      var candidate = candidates[c]
+      for (var p = 0; p < currentPots.length; p++) {
+        var current = currentPots[p]
+        if (current.key !== candidate.key) continue
+        // Tokens survive unchanged snapshots but not state changes, observed
+        // herdr revisions, or removal/recreation, even in the same millisecond.
+        if (current.notificationToken && current.notificationToken === candidate.notificationToken
+            && current.state === candidate.state && !isFocused(current))
+          items.push(current)
+        break
+      }
+    }
     if (items.length === 0) return
 
     if (items.length === 1) return send(items[0])
