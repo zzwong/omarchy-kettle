@@ -147,6 +147,8 @@ QtObject {
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
+        // Delayed notifications must identify a transition, not only a key.
+        notificationToken: (was && !changed) ? was.notificationToken : ({}),
         seq: seq,
         paneId: String(ag.pane_id),
         agentKind: String(ag.agent || ""),
@@ -232,6 +234,7 @@ QtObject {
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
+        notificationToken: (was && !changed) ? was.notificationToken : ({}),
         runStart: runStart,
         ranMs: ranMs,
         seq: seq,
@@ -317,6 +320,7 @@ QtObject {
       project: basename(String(ev.cwd || "")),
       state: state,
       since: (was && was.state === state) ? was.since : now,
+      notificationToken: (was && was.state === state) ? was.notificationToken : ({}),
       seq: -1,
       paneId: "",
       // Desktop chats share a window. Window focus must not acknowledge all
