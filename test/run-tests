@@ -747,6 +747,9 @@ test_structure() {
 # The line guard is a pure stdin->stdout filter, so it needs no remote.
 test_guard() {
   echo "line-guard"
+  python3 "$ROOT/test/line-guard.py" "$ROOT/bin/kettle-line-guard" \
+    && ok "line limit and pipe boundaries" || no "line limit and pipe boundaries"
+
   local g="$ROOT/bin/kettle-line-guard"
 
   is "passes short lines through" \

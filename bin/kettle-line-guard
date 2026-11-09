@@ -36,6 +36,10 @@ def main() -> int:
             nl = pending.find(b"\n")
             if nl == -1:
                 break
+            if nl > MAX_LINE:
+                sys.stderr.write(
+                    f"kettle-line-guard: line exceeded {MAX_LINE} bytes, closing stream\n")
+                return 1
             line, pending = pending[:nl], pending[nl + 1:]
             try:
                 stdout.write(bytes(line) + b"\n")
