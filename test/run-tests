@@ -1187,6 +1187,8 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
 # third parties build against, so pin it.
 test_emit() {
   echo "emit"
+  python3 "$ROOT/test/emit-args.py" "$ROOT/bin/kettle-emit" \
+    && ok "emit argument boundaries" || no "emit argument boundaries"
   local out
   out=$("$ROOT/bin/kettle-emit" --agent opencode --id oc1 --state working \
         --cwd /srv/app --model some-model --dry-run)
