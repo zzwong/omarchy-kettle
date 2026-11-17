@@ -230,9 +230,18 @@ continue to use the terminal title nonce.
 
 Desktop chats share one window, so window focus alone cannot acknowledge
 them. Clicking a finished chat acknowledges only that chat after the URL
-opener and window lookup succeed; an opener failure keeps its pot. With
+opener, window lookup and cursor-preserving focus verification succeed; a
+failure keeps its pot and reopens the panel with a retry message. With
 multiple desktop windows, Kettle uses the app window activated by the URL
 handler rather than guessing.
+
+Desktop navigation uses a small static adapter registry and a supervised
+controller. Owning application and executing agent are separate identities;
+only the existing Codex adapter is shipped. Its receipt means the exact-chat
+request was opened and its window focused, not an independent confirmation
+that the chat was selected or read. See [the adapter contract and authoring
+guide](docs/desktop-adapters.md) for schemas, limits, capabilities, source
+reconnaissance, and future integration qualification.
 
 ### `herdrWindow`
 

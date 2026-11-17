@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Navigation.js" as Navigation
 
 // Unified pot model. Phase 1 has one source (herdr), but the shape is already
 // source-agnostic so the shell hook can merge in later without a rewrite.
@@ -264,6 +265,7 @@ QtObject {
   // reconcile on completely different schedules: herdr pots are re-derived
   // from a snapshot every tick, hook pots persist until an event moves them.
   property var hookPots: ({})
+  property int hookRevision: 0
 
   // `finished` becomes a pot only when the user was not looking. That is
   // herdr's `done` semantic reimplemented from the outside: Kettle knows the
@@ -271,12 +273,11 @@ QtObject {
   // from "finished while you watched".
   function ingest(ev) {
     if (!ev || !ev.id) return
-    var desktopThread = ev.agent === "codex" && !ev.host && ev.desktopThread === ev.id
-      ? canonDesktopThread(ev.desktopThread) : ""
+    var navigation = Navigation.normalize(ev)
     var map = Object.assign({}, hookPots)
     // Host-scoped: two machines can hand out the same session id, and a
     // remote pot must never overwrite a local one.
-    var key = "agent:" + (ev.host ? ev.host + ":" : "") + ev.id
+    var key = Navigation.key(ev, navigation)
     var was = map[key]
     var now = Date.now()
 
@@ -287,7 +288,7 @@ QtObject {
       case "blocked":  state = "needs-attention"; break
       case "finished":
         // Seen it already? Then there is nothing to report.
-        if (ev.focused === true && !desktopThread) {
+        if (ev.focused === true && !navigation.desktop) {
           delete map[key]
           hookPots = map
           if (was) root.potChanged({ key: key, state: "" }, was.state)
@@ -321,8 +322,11 @@ QtObject {
       paneId: "",
       // Desktop chats share a window. Window focus must not acknowledge all
       // of them, or suppress completion for a chat that was never opened.
-      windowAddr: desktopThread ? "" : canonAddr(ev.window),
-      desktopThread: desktopThread,
+      windowAddr: navigation.desktop ? "" : canonAddr(ev.window),
+      navigation: navigation.target,
+      navigationError: navigation.error,
+      desktopNavigation: navigation.desktop,
+      revision: ++hookRevision,
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       message: String(ev.message || "").slice(0, 160),
@@ -476,7 +480,7 @@ QtObject {
     var current = pot && hookPots[pot.key]
     // Opening a desktop URL is asynchronous; another turn may have started
     // or finished before the opener returns. Acknowledge only this snapshot.
-    if (current && current === pot && !isLive(current.state)) dropHookPot(pot.key)
+    if (current && current === pot && current.revision === pot.revision && !isLive(current.state)) dropHookPot(pot.key)
   }
 
   // A crashed agent may never emit SessionEnd. Once its terminal closes, a
@@ -517,11 +521,6 @@ QtObject {
     if (s.length === 0) return ""
     if (s.indexOf("0x") !== 0) s = "0x" + s
     return /^0x[0-9a-f]{1,16}$/.test(s) ? s : ""
-  }
-
-  function canonDesktopThread(id) {
-    var s = String(id || "")
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : ""
   }
 
   function basename(p) {

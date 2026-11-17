@@ -161,6 +161,8 @@ test_hook() {
   local uuid="11111111-1111-4111-8111-111111111111" desktop_event
   desktop_event="{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$uuid\",\"cwd\":\"/p\",\"agent_type\":\"codex\"}"
   out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit "$desktop_event")
+  is "desktop hook emits a versioned owner target" "$(field "$out" navigation)" \
+     "{'version': 1, 'kind': 'desktop-chat', 'app': 'codex-desktop', 'instance': 'default', 'threadId': '$uuid'}"
   is "desktop Codex carries its thread UUID" "$(field "$out" desktopThread)" "$uuid"
   is "desktop Codex does not use a shared window address" "$(field "$out" window)" ""
   is "desktop window focus cannot establish chat focus" "$(field "$out" focused)" "False"
@@ -586,7 +588,7 @@ test_hookwindows() {
   fi
 
   local T; T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$T/"
+  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$T/"
   cat > "$T/harness.qml" <<'EOF'
 import QtQuick
 import Quickshell
@@ -627,7 +629,7 @@ test_desktop() {
     return
   fi
   local T; T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$T/"
+  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$T/"
   {
     cat <<'EOF'
 import QtQuick
@@ -636,11 +638,17 @@ import Quickshell.Io
 QtObject {
   id: root
   property PotStore store: PotStore {}
-  property QtObject desktopJumper: QtObject {
+  property QtObject navigator: QtObject {
+    property string outcome: ""
+    function fail(code) {}
     property bool running: false
     property var command: []
-    property var pot: null
+    function start(pot) {
+      command = ["/plugin/bin/kettle-codex-jump", JSON.stringify({version: 1,
+        requestId: "test", target: pot.navigation})]
+    }
   }
+  readonly property var validStates: ["register", "working", "blocked", "finished", "gone"]
   property string pluginDir: "/plugin/"
   property string herdrWindow: ""
   property string remoteWindow: ""
@@ -650,6 +658,7 @@ QtObject {
   function raise(match) {}
   function focusWindow(addr) { focused = addr }
 EOF
+    sed -n '/^  function sanitize(/,/^  }$/p' "$ROOT/Relay.qml"
     sed -n '/^  function jump(/,/^  }$/p' "$ROOT/Panel.qml"
     cat <<'EOF'
   Component.onCompleted: {
@@ -659,11 +668,15 @@ EOF
                   window: "0x1234", focused: true})
     store.ingest({id: b, agent: "codex", state: "finished", desktopThread: b,
                   window: "0x1234"})
+    var stripped = sanitize({id: a, agent: "codex", state: "finished", desktopThread: a,
+      navigation: {version: 1, kind: "desktop-chat", app: "codex-desktop", instance: "default", threadId: a},
+      window: "0x1234", focused: true, command: "evil", url: "file:///etc/passwd"}, "remote")
+    console.log("DESKTOP:relay:" + (!stripped.navigation && !stripped.desktopThread && !stripped.command && !stripped.url && !stripped.window && !stripped.focused))
     store.seenWindow("0x1234")
     console.log("DESKTOP:shared-focus:" + store.hookList().length)
     var first = store.hookPots["agent:" + a]
     jump(first)
-    console.log("DESKTOP:route:" + JSON.stringify(desktopJumper.command))
+    console.log("DESKTOP:route:" + JSON.stringify(navigator.command))
     console.log("DESKTOP:pending:" + store.hookList().length)
     store.acknowledgeHookPot(first)
     console.log("DESKTOP:only-selected:" + store.hookList().map(function(p) { return p.key }).join())
@@ -683,13 +696,13 @@ EOF
     console.log("DESKTOP:terminal:" + focused + ":" + !!store.hookPots["agent:terminal"])
     var bad = a + "?host=evil"
     store.ingest({id: bad, agent: "codex", state: "working", desktopThread: bad})
-    console.log("DESKTOP:invalid:" + store.hookPots["agent:" + bad].desktopThread)
+    console.log("DESKTOP:invalid:" + store.hookPots["agent:" + bad].navigationError)
     store.ingest({id: a, agent: "codex", state: "working", desktopThread: b})
-    console.log("DESKTOP:mismatch:" + store.hookPots["agent:" + a].desktopThread)
+    console.log("DESKTOP:mismatch:" + store.hookPots["agent:" + a].navigationError)
     store.ingest({id: a, agent: "codex", state: "working", desktopThread: a, host: "remote"})
-    console.log("DESKTOP:remote:" + store.hookPots["agent:remote:" + a].desktopThread)
+    console.log("DESKTOP:remote:" + store.hookPots["agent:remote:" + a].navigationError)
     store.ingest({id: a, agent: "claude", state: "working", desktopThread: a})
-    console.log("DESKTOP:wrong-agent:" + store.hookPots["agent:" + a].desktopThread)
+    console.log("DESKTOP:wrong-agent:" + store.hookPots["agent:" + a].navigationError)
     killer.running = true
   }
   property Process killer: Process {
@@ -702,9 +715,10 @@ EOF
   out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
   rm -rf "$T"
   desktop_result() { printf '%s\n' "$out" | sed -n "s/.*DESKTOP:$1://p" | head -1; }
+  is "relay strips local desktop targets and executable fields" "$(desktop_result relay)" "true"
   is "app focus acknowledges neither desktop chat" "$(desktop_result shared-focus)" "2"
   is "desktop jump uses its thread UUID" "$(desktop_result route)" \
-     '["/plugin/bin/kettle-codex-jump","11111111-1111-4111-8111-111111111111"]'
+     '["/plugin/bin/kettle-codex-jump","{\"version\":1,\"requestId\":\"test\",\"target\":{\"version\":1,\"kind\":\"desktop-chat\",\"app\":\"codex-desktop\",\"instance\":\"default\",\"threadId\":\"11111111-1111-4111-8111-111111111111\"}}"]'
   is "pending navigation leaves both chats intact" "$(desktop_result pending)" "2"
   is "success acknowledges only the selected chat" "$(desktop_result only-selected)" \
      "agent:11111111-1111-4111-8111-111111111112"
@@ -712,10 +726,49 @@ EOF
   is "navigation does not dismiss live work" "$(desktop_result live)" "simmering"
   is "a missing target does not dismiss a finished pot" "$(desktop_result no-target)" "true"
   is "terminal navigation still focuses and acknowledges" "$(desktop_result terminal)" "0x4567:false"
-  is "invalid desktop targets are rejected on ingest" "$(desktop_result invalid)" ""
-  is "a desktop target must identify its own session" "$(desktop_result mismatch)" ""
+  is "invalid desktop targets are rejected on ingest" "$(desktop_result invalid)" "invalid-target"
+  is "a desktop target must identify its own session" "$(desktop_result mismatch)" "invalid-target"
   is "remote input cannot navigate local desktop chats" "$(desktop_result remote)" ""
-  is "other agents cannot claim desktop navigation" "$(desktop_result wrong-agent)" ""
+  is "other agents cannot claim desktop navigation" "$(desktop_result wrong-agent)" "invalid-target"
+  T=$(mktemp -d)
+  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$ROOT/Navigator.qml" "$T/"
+  cp "$ROOT/test/navigation-contract.qml" "$ROOT/test/navigation-controller.qml" "$T/"
+  mkdir -p "$T/bin"
+  cat > "$T/bin/kettle-codex-jump" <<'PYHELPER'
+#!/usr/bin/env python3
+import json, os, sys, time
+request = json.loads(sys.argv[1])
+mode = os.environ.get("KETTLE_TEST_MODE", "success")
+if mode == "slow": time.sleep(5)
+else: time.sleep(0.1)
+receipt = {"version": 1, "requestId": request["requestId"], "ok": True,
+           "resolution": "opened", "window": "0x1234"}
+if request["target"]["app"] == "test-select":
+    receipt.update(resolution="selected", selectedThreadId=request["target"]["threadId"])
+if mode == "mismatch": receipt["requestId"] = "old"
+if mode == "malformed": print("not JSON")
+elif mode == "oversized": print("x" * 10000)
+else: print(json.dumps(receipt))
+sys.exit(1 if mode == "nonzero" else 0)
+PYHELPER
+  chmod +x "$T/bin/kettle-codex-jump"
+  out=$(cd "$T" && timeout 15 qs --no-color -p navigation-contract.qml 2>&1)
+  has "desktop contract validates synthetic adapters, scoping and receipts" "$out" "CONTRACT:PASS:"
+  [[ $out != *"CONTRACT:PASS:"* ]] && printf '%s\n' "$out"
+  # Add fixtures only to the isolated controller harness, after asserting that
+  # the production registry rejects them. Events/config cannot register these.
+  cat >> "$T/Navigation.js" <<'JSFIXTURES'
+adapters["test-open"] = {helper: "kettle-test-jump", instances: ["default", "nightly"],
+  thread: /^task_[a-z0-9]+$/, receipt: "opened"}
+adapters["test-select"] = {helper: "kettle-test-jump", instances: ["default"],
+  thread: /^[0-9]{1,8}$/, receipt: "selected"}
+JSFIXTURES
+  cp "$T/bin/kettle-codex-jump" "$T/bin/kettle-test-jump"
+  out=$(cd "$T" && timeout 15 qs --no-color -p navigation-controller.qml 2>&1)
+  has "desktop controller supervises execution, cancellation and stale receipts" "$out" "CONTROLLER:PASS:"
+  [[ $out != *"CONTROLLER:PASS:"* ]] && printf '%s\n' "$out"
+  rm -rf "$T"
+
 }
 
 # ----------------------------------------------------------------- structure
@@ -1201,6 +1254,14 @@ print(d['source'], d['agent'], d['id'], d['state'], d['cwd'], d['model'], d['foc
     && no "path-like id rejected" "accepted" || ok "path-like id rejected"
   "$ROOT/bin/kettle-emit" --agent x --id ok1 --state exploded >/dev/null 2>&1 \
     && no "unknown state rejected" "accepted" || ok "unknown state rejected"
+  local target='{"version":1,"kind":"desktop-chat","app":"codex-desktop","instance":"default","threadId":"11111111-1111-4111-8111-111111111111"}'
+  out=$("$ROOT/bin/kettle-emit" --agent codex --id test --state working --navigation "$target" --dry-run)
+  is "emit carries owner metadata without commands" "$(field "$out" navigation)" \
+     "{'version': 1, 'kind': 'desktop-chat', 'app': 'codex-desktop', 'instance': 'default', 'threadId': '11111111-1111-4111-8111-111111111111'}"
+  if "$ROOT/bin/kettle-emit" --agent codex --id test --state working --navigation '[]' --dry-run >/dev/null 2>&1; then
+    no "emit rejects non-object desktop metadata"
+  else ok "emit rejects non-object desktop metadata"; fi
+
 }
 
 # ------------------------------------------------------------ coherence tests
