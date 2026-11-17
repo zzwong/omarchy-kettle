@@ -230,6 +230,8 @@ test_hook() {
 # ------------------------------------------------------------- install tests
 test_install() {
   echo "install"
+  python3 "$ROOT/test/installer-writers.py" "$ROOT/bin/kettle-install" \
+    && ok "installer stages preserve foreign occupants" || no "installer stages preserve foreign occupants"
   local T; T=$(mktemp -d)
   # HOME is pinned so targets resolved from $HOME (qwen, gemini, droid, grok)
   # can never touch the real machine from inside a test run.
