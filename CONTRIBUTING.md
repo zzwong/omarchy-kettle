@@ -30,6 +30,12 @@ trip.
 ./test/run-tests
 ```
 
-No framework; bash and python3. New behavior gets a test in the matching
-group, and a fix for a bug that the suite missed gets a test that would have
-caught it.
+No framework; bash and python3. Node runs the portable notification and pi
+extension tests (notification tests require it in CI and skip locally when
+absent). Quickshell groups and the live relay skip when their runtime is
+unavailable. New behavior gets a test in the matching group, and a fix for a
+bug that the suite missed gets a test that would have caught it.
+
+`./test/run-tests notifications` exercises extracted production JavaScript
+with simulated QML bindings, signals, timers and notification transport. It
+does not qualify native QML propagation, initialization or desktop delivery.

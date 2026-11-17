@@ -314,6 +314,7 @@ Panel {
   Notifier {
     id: notifier
     enabled: root.notify
+    currentPots: store.pots
     focusedPaneId: poller.focusedPaneId
     // Hook and remote pots have no paneId, so paneId-based suppression could
     // never match them and a blocked pot would notify even while you watched
