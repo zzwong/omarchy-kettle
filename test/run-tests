@@ -1468,6 +1468,13 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "removing a host destroys only it"      "$(l after-remove)" '["-a"]'
 }
 
+# Parser-only remote setup checks: no SSH, config, token or relay execution.
+test_remoteargs() {
+  echo "remoteargs"
+  python3 "$ROOT/test/remote-args.py" "$ROOT/bin/kettle-remote" \
+    && ok "remote argument boundaries" || no "remote argument boundaries"
+}
+
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
 # third parties build against, so pin it.
@@ -1815,7 +1822,7 @@ EOF
   is "an unchanged herdr snapshot does not re-notify" "$(notify_result unchanged-snapshot)" ""
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit remoteargs install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
