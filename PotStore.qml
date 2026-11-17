@@ -85,6 +85,32 @@ QtObject {
     }
   }
 
+  // Runtime belongs to an observed run, not to time spent waiting unseen.
+  // null means its start was never observed; zero is a valid clock value.
+  function runTiming(was, state, now, completionChanged) {
+    var start = was && typeof was.runStart === "number" ? was.runStart : null
+    var duration = was && typeof was.ranMs === "number" ? was.ranMs : 0
+    var wasFinished = was && (was.state === "ready" || was.state === "burnt")
+    if (state === "simmering") {
+      // Approval is part of the same run. Repeated working events are not
+      // evidence of a new turn, but returning from a finished pot is.
+      if (!was || wasFinished || start === null) start = now
+      duration = 0
+    } else if (state === "ready" || state === "burnt") {
+      if (wasFinished) {
+        // A changed completion sequence can hide an entire intervening run.
+        // Its start was not observed, so do not reuse the previous duration.
+        if (completionChanged) { start = null; duration = 0 }
+      } else {
+        duration = start === null ? 0 : Math.max(0, now - start)
+      }
+    } else if (wasFinished) {
+      start = null
+      duration = 0
+    }
+    return { runStart: start, ranMs: duration }
+  }
+
   function reconcile(agents) {
     var now = Date.now()
     var prev = {}
@@ -107,18 +133,7 @@ QtObject {
       // time-in-state rather than time-since-first-seen.
       var changed = !was || was.state !== state || (seq >= 0 && was.seq !== seq)
 
-      // When this pot last started working. Carried across reconciles so a
-      // finished pot can report how long it actually ran — the one number that
-      // cannot be reconstructed after the fact.
-      var runStart = (was && was.runStart) ? was.runStart : now
-      if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
-      var ranMs = (was && was.ranMs) ? was.ranMs : 0
-      // Measure from runStart regardless of the immediately preceding state: a
-      // session that finishes from `needs-attention` (approved, then done) ran
-      // just as long as one finishing from `simmering`, and reporting nothing
-      // for it was an accident of the transition check.
-      if ((state === "ready" || state === "burnt") && was && was.runStart)
-        ranMs = now - was.runStart
+      var timing = runTiming(was, state, now, seq >= 0 && was && was.seq !== seq)
 
       // pi keys its session logs by cwd, so a pi pot can name its model even
       // though herdr's snapshot cannot. A fresh prompt may have switched
@@ -139,8 +154,8 @@ QtObject {
       var pot = {
         key: key,
         source: "herdr",
-        runStart: runStart,
-        ranMs: ranMs,
+        runStart: timing.runStart,
+        ranMs: timing.ranMs,
         // A `herdr agent rename` name is the user's own word for the pane, so
         // it outranks the agent's self-set terminal title.
         label: String(ag.name || ag.terminal_title_stripped || ag.agent || "agent"),
@@ -216,11 +231,7 @@ QtObject {
       if (!isFinite(seq)) seq = -1
       var changed = !was || was.state !== state || (seq >= 0 && was.seq !== seq)
 
-      var runStart = (was && was.runStart) ? was.runStart : now
-      if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
-      var ranMs = (was && was.ranMs) ? was.ranMs : 0
-      if ((state === "ready" || state === "burnt") && was && was.runStart)
-        ranMs = now - was.runStart
+      var timing = runTiming(was, state, now, seq >= 0 && was && was.seq !== seq)
 
       var pot = {
         key: key,
@@ -232,8 +243,8 @@ QtObject {
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
-        runStart: runStart,
-        ranMs: ranMs,
+        runStart: timing.runStart,
+        ranMs: timing.ranMs,
         seq: seq,
         paneId: String(ag.pane_id),
         host: host,
@@ -302,17 +313,13 @@ QtObject {
       default: return
     }
 
-    var runStart = (was && was.runStart) ? was.runStart : now
-    if (state === "simmering" && (!was || was.state !== "simmering")) runStart = now
-    var ranMs = (was && was.ranMs) ? was.ranMs : 0
-    if (state === "ready" && was && was.runStart)
-      ranMs = now - was.runStart
+    var timing = runTiming(was, state, now, false)
 
     var pot = {
       key: key,
       source: "agent",
-      runStart: runStart,
-      ranMs: ranMs,
+      runStart: timing.runStart,
+      ranMs: timing.ranMs,
       label: root.agentLabel(ev.agent),
       project: basename(String(ev.cwd || "")),
       state: state,

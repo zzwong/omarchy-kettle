@@ -577,6 +577,113 @@ HARNESS
   is "a shell-ish suffix is not an address"      "$(addr trailing-shell)" ""
 }
 
+# ----------------------------------------------------------- duration tests
+# Extract the real ingestion methods, but not PotStore's FileViews/processes.
+# Only Date.now() is substituted with the fake clock; lifecycle code is unchanged.
+test_duration() {
+  echo "duration"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "completed run duration" "qs not on PATH"
+    return
+  fi
+  local T out f; T=$(mktemp -d)
+  {
+    cat <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+QtObject {
+  id: root
+  property var herdrPots: []
+  property var remotePots: ({})
+  property var hookPots: ({})
+  property var piModels: ({})
+  property real testNow: 0
+  signal potChanged(var pot, string fromState)
+  function resolvePiModel(cwd) { throw new Error("unexpected model lookup") }
+EOF
+    for f in runTiming mapStatus reconcile reconcileRemote ingest agentLabel canonAddr canonDesktopThread basename; do
+      sed -n "/^  function $f(/,/^  }$/p" "$ROOT/PotStore.qml" | sed 's/Date.now()/root.testNow/g'
+    done
+    cat <<'EOF'
+  function check(name, pot, start, duration) {
+    if (!pot || pot.runStart !== start || pot.ranMs !== duration)
+      throw new Error(name + ": " + JSON.stringify(pot))
+  }
+  function deliver(source, state, time, seq) {
+    testNow = time
+    if (source === "hook" || source === "remote-hook") {
+      ingest({ id: "one", agent: "claude", state: state,
+               host: source === "remote-hook" ? "host" : "" })
+      return hookPots[source === "remote-hook" ? "agent:host:one" : "agent:one"]
+    }
+    var ag = { pane_id: "one", agent: "claude", agent_status:
+      state === "finished" ? "done" : state, state_change_seq: seq }
+    if (source === "local") { reconcile([ag]); return herdrPots[0] }
+    reconcileRemote("host", [ag])
+    return remotePots["rherdr:host:one"]
+  }
+  function reset() { herdrPots = []; remotePots = ({}); hookPots = ({}) }
+  Component.onCompleted: {
+    try {
+      var sources = ["local", "remote", "hook", "remote-hook"]
+      for (var i = 0; i < sources.length; i++) {
+        var s = sources[i]
+        reset()
+        check("first done", deliver(s, "finished", 1000, 1), null, 0)
+        check("repeated unknown", deliver(s, "finished", 60000, 1), null, 0)
+        reset()
+        check("first blocked", deliver(s, "blocked", 1000, 1), null, 0)
+        check("blocked without start", deliver(s, "finished", 2000, 2), null, 0)
+        reset()
+        check("zero clock", deliver(s, "working", 0, 1), 0, 0)
+        check("zero duration", deliver(s, "finished", 0, 2), 0, 0)
+        check("zero stays latched", deliver(s, "finished", 60000, 2), 0, 0)
+        check("new run", deliver(s, "working", 70000, 3), 70000, 0)
+        check("duplicate working", deliver(s, "working", 71000, 3), 70000, 0)
+        check("approval", deliver(s, "blocked", 72000, 4), 70000, 0)
+        check("blocked completion", deliver(s, "finished", 80000, 5), 70000, 10000)
+        check("duplicate completion", deliver(s, "finished", 140000, 5), 70000, 10000)
+        deliver(s, "working", 150000, 6)
+        deliver(s, "blocked", 152000, 7)
+        check("approval resumed", deliver(s, "working", 154000, 8), 150000, 0)
+        check("resumed completion", deliver(s, "finished", 160000, 9), 150000, 10000)
+        if (s === "local" || s === "remote") {
+          check("missed intervening run", deliver(s, "finished", 170000, 11), null, 0)
+          check("missed run remains unknown", deliver(s, "finished", 180000, 11), null, 0)
+        }
+        console.log("DURATION:PASS:" + s + ":")
+      }
+      reset()
+      deliver("remote", "working", 1000, 1)
+      deliver("remote", "finished", 11000, 2)
+      testNow = 61000
+      reconcileRemote("host", [
+        { pane_id: "one", agent: "claude", agent_status: "done", state_change_seq: 2 },
+        { pane_id: "two", agent: "claude", agent_status: "working", state_change_seq: 1 }
+      ])
+      check("unrelated remote pane", remotePots["rherdr:host:one"], 1000, 10000)
+      console.log("DURATION:PASS:unrelated-pane:")
+    } catch (e) {
+      console.log("DURATION:FAIL:" + String(e))
+    } finally {
+      killer.running = true
+    }
+  }
+  property Process killer: Process {
+    command: ["kill", "-9", String(Quickshell.processId)]
+  }
+}
+EOF
+  } > "$T/harness.qml"
+  out=$(QT_QPA_PLATFORM=offscreen timeout 10 qs -p "$T/harness.qml" 2>&1 || true)
+  rm -rf "$T"
+  for f in local remote hook remote-hook unrelated-pane; do
+    has "duration: $f" "$out" "DURATION:PASS:$f:"
+  done
+  hasnt "duration assertions" "$out" "DURATION:FAIL:"
+}
+
 # ---------------------------------------------------------- hook-window tests
 test_hookwindows() {
   echo "hookwindows"
@@ -1399,7 +1506,7 @@ PY
      "$(grep -cE 'lastSeen\s*=[^=]' RemoteHerdrPoller.qml)" "1"
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel address hookwindows desktop reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel address duration hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
