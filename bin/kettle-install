@@ -91,7 +91,7 @@ py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
 merge() {
   local file=$1 mode=$2 hook=$3 style=$4 unit=$5 use_async=$6; shift 6
   py "$file" "$mode" "$hook" "$style" "$unit" "$use_async" "$@" <<'PY'
-import json, os, sys
+import json, os, shlex, sys
 
 path, mode, hook, style, unit, use_async, *events = sys.argv[1:]
 
@@ -118,15 +118,46 @@ changed = False
 # finds the entry the first one wrote.
 hook_name = os.path.basename(hook)
 
-def is_ours(entry):
-    return any(hook_name in str(h.get("command", "")) for h in entry.get("hooks", []))
+def is_ours_hook(entry):
+    if not isinstance(entry, dict) or entry.get("type") != "command":
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    if command == hook:
+        return True
+    # Older clones wrote absolute paths. Recognize a single literal command,
+    # never a mention, wrapper, expansion or lookalike executable name.
+    if any(char in command for char in "$`;&|<>(){}*?[]\r\n\0"):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return (len(words) == 1 and os.path.isabs(words[0])
+            and os.path.basename(words[0]) == hook_name)
+
+
+def without_ours(group):
+    kept = []
+    removed = False
+    for entry in group:
+        original = entry.get("hooks", [])
+        remaining = [item for item in original if not is_ours_hook(item)]
+        if len(remaining) == len(original):
+            kept.append(entry)
+        else:
+            removed = True
+            if remaining:
+                kept.append({**entry, "hooks": remaining})
+    return kept, removed
 
 for event in events:
     group = hooks.get(event) or []
 
     if mode == "remove":
-        kept = [e for e in group if not is_ours(e)]
-        if len(kept) != len(group):
+        kept, removed = without_ours(group)
+        if removed:
             changed = True
             if kept:
                 hooks[event] = kept
@@ -134,7 +165,7 @@ for event in events:
                 hooks.pop(event, None)
         continue
 
-    ours = [h for e in group for h in e.get("hooks", []) if hook_name in str(h.get("command", ""))]
+    ours = [h for e in group for h in e.get("hooks", []) if is_ours_hook(h)]
 
     if mode == "check":
         print(f"  {event:<18} {'ok' if ours else 'MISSING'}")

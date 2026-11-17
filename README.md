@@ -49,6 +49,12 @@ existing hooks and settings; `--check` reports status without changing
 anything. herdr needs no setup and works fully without `kettle-install`; only
 sessions outside herdr need the hooks.
 
+Removal recognizes the current generated hook path and single literal absolute
+commands named `kettle-agent-hook`, including ordinary or quoted older-clone
+paths. It does not execute or expand command text to infer ownership. Wrappers,
+expansions and ambiguous unquoted legacy paths are left unchanged for manual
+review. Foreign commands and mixed-group metadata are preserved.
+
 Optionally bind the panel in `~/.config/hypr/bindings.lua`:
 
 ```lua
