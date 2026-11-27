@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Codex's existing-chat URL adapter; opened receipt, not a selection receipt."""
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -10,9 +11,14 @@ from kettle_navigation import NavigationError, fullmatch, serve
 
 def open_chat(runner, target):
     classes = ("chatgpt", "codex")
-    # Backend resume controls execution, not selection of an existing UI chat.
-    runner.command(["xdg-open", "codex://threads/" + target["threadId"]], limit=5, capture=False)
-    for _ in range(15):
+    url = "codex://threads/" + target["threadId"]
+    # gio hands the link to the registered handler in ~50ms; xdg-open spends
+    # ~340ms resolving it and waiting on the app (both timed with
+    # `date +%s%N`). Either way the window is raised while the app is still
+    # taking the link, and the opener's exit status is checked afterwards.
+    opener = runner.launch(["gio", "open", url] if shutil.which("gio") else ["xdg-open", url])
+    settled = 0
+    while True:
         clients = runner.compositor("clients")
         hits = [c for c in clients if isinstance(c, dict)
                 and str(c.get("class", "")).lower() in classes]
@@ -25,9 +31,17 @@ def open_chat(runner, target):
                 address = active
         if fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
             runner.focus(address, classes)
+            runner.finish(opener, limit=5)
             return address.lower()
+        # A cold start has no window until the app is up: keep looking while
+        # the opener runs, then for the same 15 polls as before.
+        if opener.poll() is not None:
+            if opener.returncode != 0:
+                raise NavigationError("transport-failed")
+            settled += 1
+            if settled >= 15:
+                raise NavigationError("window-ambiguous" if hits else "app-unavailable")
         runner.pause()
-    raise NavigationError("window-ambiguous" if hits else "app-unavailable")
 
 
 if __name__ == "__main__":

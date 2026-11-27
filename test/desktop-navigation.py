@@ -28,6 +28,11 @@ class DesktopNavigation(unittest.TestCase):
             p = self.path / name
             p.write_text("#!/usr/bin/env python3\n" + body)
             p.chmod(0o755)
+        # The helper prefers gio; route it to the xdg-open stub so no test can
+        # reach a real URL handler.
+        gio = self.path / "gio"
+        gio.write_text('#!/bin/bash\n[ "$1" = open ] && shift\nexec xdg-open "$@"\n')
+        gio.chmod(0o755)
         self.env["KETTLE_NAV_CURSOR"] = json.dumps({"x": 34, "y": -56})
         self.clients([{"class": "chatgpt", "address": "0x1234"}])
 
@@ -140,6 +145,28 @@ class DesktopNavigation(unittest.TestCase):
         result = self.run_opener()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertLess(time.monotonic() - begin, 3)
+
+    def test_window_is_raised_while_the_link_is_delivered(self):
+        # A slow handler must not delay the raise: focus lands first, and the
+        # opener's success is still required for the receipt.
+        (self.path / "xdg-open").write_text(
+            '#!/bin/bash\nsleep 0.6\ndate +%s%N > "$KETTLE_NAV_LOG.opened"\nexit 0\n')
+        hyprctl = self.path / "hyprctl"
+        hyprctl.write_text(hyprctl.read_text().replace(
+            ' open(os.environ["KETTLE_NAV_LOG"]+".focus","w").write(sys.argv[2])\n',
+            ' open(os.environ["KETTLE_NAV_LOG"]+".focus","w").write(sys.argv[2])\n'
+            ' open(os.environ["KETTLE_NAV_LOG"]+".raised","w").write(str(__import__("time").time_ns()))\n'))
+        result = self.run_opener()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        raised = int((self.path / "url.raised").read_text())
+        opened = int((self.path / "url.opened").read_text())
+        self.assertLess(raised, opened)
+
+    def test_failed_opener_is_not_success_after_raise(self):
+        self.env["KETTLE_NAV_EXIT"] = "1"
+        result = self.run_opener()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(json.loads(result.stdout)["ok"])
 
     def test_failed_focus_keeps_pot(self):
         self.env["KETTLE_NAV_FOCUS_EXIT"] = "1"

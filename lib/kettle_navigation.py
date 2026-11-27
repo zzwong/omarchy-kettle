@@ -63,6 +63,26 @@ class Runner:
             self.child.terminate()
         raise NavigationError("cancelled")
 
+    def launch(self, argv):
+        """Start an opener without waiting, so the window can be raised while
+        the app is still taking the link. Its output is never read."""
+        self.remaining()
+        try:
+            return subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            raise NavigationError("app-unavailable") from None
+        except OSError:
+            raise NavigationError("transport-failed") from None
+
+    def finish(self, proc, limit):
+        try:
+            code = proc.wait(timeout=max(0, min(limit, self.remaining())))
+        except subprocess.TimeoutExpired:
+            raise NavigationError("timeout") from None
+        if code != 0:
+            raise NavigationError("transport-failed")
+
     def command(self, argv, cap=262144, limit=2, capture=True):
         self.remaining()
         end = min(self.deadline, time.monotonic() + limit)
