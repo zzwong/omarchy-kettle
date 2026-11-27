@@ -110,11 +110,8 @@ Panel {
     // Terminal hooks carry a window address resolved via an OSC 2 title
     // nonce; desktop hooks carry a chat UUID for the app's URL handler.
     if (pot.source === "agent") {
-      if (pot.desktopThread) {
-        if (desktopJumper.running) return
-        desktopJumper.pot = pot
-        desktopJumper.command = [root.pluginDir + "bin/kettle-codex-jump", pot.desktopThread]
-        desktopJumper.running = true
+      if (pot.desktopNavigation) {
+        navigator.start(pot)
         return
       }
       if (pot.rexSession && pot.rexBlock) {
@@ -126,7 +123,7 @@ Panel {
         return
       }
       if (!pot.windowAddr) {
-        console.warn("kettle: this session has no navigation target")
+        navigator.fail("invalid-target")
         return
       }
       focusWindow(pot.windowAddr)
@@ -162,21 +159,14 @@ Panel {
     root.raise(root.herdrWindow)
   }
 
-  Process {
-    id: desktopJumper
-    property var pot: null
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var addr = store.canonAddr(String(text || "").trim())
-        if (!addr) return
-        root.focusWindow(addr)
-        store.acknowledgeHookPot(desktopJumper.pot)
-      }
-    }
-    onExited: function(code) {
-      if (code !== 0) console.warn("kettle: cannot open Codex desktop chat; keeping its pot")
-      desktopJumper.pot = null
+  Navigator {
+    id: navigator
+    pluginDir: root.pluginDir
+    store: store
+    onFailed: function(message) {
+      console.warn("kettle: " + message)
+      // A failed click needs a visible retry path, including notification jumps.
+      root.open()
     }
   }
 
@@ -386,7 +376,9 @@ Panel {
   // first arrow press lands on the top pot rather than moving off it.
   property int cursor: -1
 
-  onOpenedChanged: { cursor = -1; list.contentY = 0 }
+  // A failure reopens the panel to show its retry message; once the panel
+  // closes, the next open must show the pot count again.
+  onOpenedChanged: { cursor = -1; list.contentY = 0; if (!opened) navigator.outcome = "" }
 
   function moveCursor(delta) {
     var n = store.pots.length
@@ -564,6 +556,7 @@ Panel {
         Text {
           id: sub
           text: {
+            if (navigator.outcome) return navigator.outcome
             if (poller.serverDown) return "NO SESSION"
             if (store.pots.length === 0) return "NOTHING COOKING"
             return store.liveCount + " COOKING"
@@ -572,7 +565,12 @@ Panel {
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
-          font.letterSpacing: 1.2
+          font.letterSpacing: navigator.outcome ? 0 : 1.2
+          wrapMode: Text.WordWrap
+          maximumLineCount: 3
+          elide: Text.ElideRight
+          horizontalAlignment: Text.AlignRight
+          width: Math.max(0, parent.width - title.width - Style.space(12))
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
         }

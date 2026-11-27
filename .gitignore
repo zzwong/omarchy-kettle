@@ -6,3 +6,6 @@
 .DS_Store
 *.swp
 *~
+
+# Python helper imports
+__pycache__/
