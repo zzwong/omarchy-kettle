@@ -1513,7 +1513,88 @@ except (ValueError, KeyError, TypeError, AssertionError):
   fi
 }
 
-groups=(${1:-structure coherence hook emit install guard stream pimodel notifications address hookwindows desktop reachability hostmodel relay})
+# ------------------------------------------------------- native notify tests
+# The real store and notifier under qs, wired as Panel wires them, so the
+# potChanged signal copies its argument exactly as it does in the shell. The
+# Node group cannot see that copy. The sender is rewritten to a recorder, so
+# nothing reaches the desktop.
+test_notifyqml() {
+  echo "notify-qml"
+  if ! command -v qs >/dev/null 2>&1; then
+    skipt "native notification behavior" "qs not on PATH"
+    return
+  fi
+  local T; T=$(mktemp -d)
+  cp "$ROOT/PotStore.qml" "$T/"
+  sed 's/Quickshell\.execDetached(/root.record(/' "$ROOT/Notifier.qml" | sed '$d' > "$T/Notifier.qml"
+  cat >> "$T/Notifier.qml" <<'EOF'
+  property var sent: []
+  function record(argv) { sent = sent.concat([argv[4] + " " + argv[5]]) }
+}
+EOF
+  cat > "$T/harness.qml" <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+QtObject {
+  id: root
+  property PotStore store: PotStore {
+    onPotChanged: function(pot, fromState) { notifier.consider(pot, fromState) }
+  }
+  property Notifier notifier: Notifier {
+    settleMs: 200
+    currentPots: store.pots
+  }
+  function hook(id, state) { store.ingest({id: id, agent: "claude", state: state, cwd: "/tmp/p" + id}) }
+  function herdr(id, status, seq) {
+    store.reconcile([{pane_id: id, agent: "claude", agent_status: status,
+                      state_change_seq: seq, cwd: "/tmp/p" + id, name: id}])
+  }
+  // Flushed by hand so the outcome does not depend on scheduling; scenario E
+  // waits on the real Timer instead.
+  function report(name) {
+    notifier.settle.stop(); notifier.flush()
+    console.log("NOTIFY:" + name + ":" + notifier.sent.join("|"))
+    notifier.sent = []
+  }
+  Component.onCompleted: {
+    hook("A", "working"); hook("A", "blocked"); hook("A", "working"); report("approved")
+    hook("A", "blocked"); report("reblocked")
+    hook("B", "working"); hook("B", "finished")
+    store.acknowledgeHookPot(store.hookPots["agent:B"]); report("acknowledged")
+    hook("C", "working"); hook("C", "blocked"); hook("C", "finished"); report("blocked-then-ready")
+    herdr("G", "working", 1); herdr("G", "blocked", 2); herdr("G", "blocked", 4); report("seq-round-trip")
+    herdr("G", "blocked", 4); report("unchanged-snapshot")
+    hook("E", "working"); hook("E", "blocked")
+  }
+  property Timer wait: Timer {
+    interval: 1000; running: true
+    onTriggered: {
+      console.log("NOTIFY:timer:" + notifier.sent.join("|"))
+      killer.running = true
+    }
+  }
+  property Process killer: Process { command: ["kill", "-9", String(Quickshell.processId)] }
+}
+EOF
+  local out
+  out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  notify_result() { printf '%s\n' "$out" | sed -n "s/.*NOTIFY:$1://p" | head -1; }
+  is "a genuine block notifies through the real signal and Timer" \
+     "$(notify_result timer)" "critical Claude Code needs approval"
+  is "approval inside the settle window discards the toast" "$(notify_result approved)" ""
+  is "a discarded toast does not start the cooldown" \
+     "$(notify_result reblocked)" "critical Claude Code needs approval"
+  is "jump acknowledgement discards the ready toast" "$(notify_result acknowledged)" ""
+  is "blocked then ready is one toast for one pot" \
+     "$(notify_result blocked-then-ready)" "normal Claude Code is ready"
+  is "a herdr seq round trip in one poll still notifies" \
+     "$(notify_result seq-round-trip)" "critical G needs approval"
+  is "an unchanged herdr snapshot does not re-notify" "$(notify_result unchanged-snapshot)" ""
+}
+
+groups=(${1:-structure coherence hook emit install guard stream pimodel notifications notifyqml address hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

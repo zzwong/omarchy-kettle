@@ -48,9 +48,10 @@ function harness(kind = 'hook') {
   if (disabled) vm.runInContext('function enabledChanged() {' + disabled[1] + '}', notify, { timeout: 1000 });
 
   const store = {
-    herdrPots: [], hookPots: {}, remotePots: {}, piModels: {},
+    herdrPots: [], hookPots: {}, remotePots: {}, piModels: {}, notificationSeq: 0,
     Date: { now: () => clock.now },
-    potChanged(pot, fromState) { notify.consider(pot, fromState); },
+    // A QML var signal argument arrives as a copy, so identity never survives.
+    potChanged(pot, fromState) { notify.consider(JSON.parse(JSON.stringify(pot)), fromState); },
   };
   store.root = store;
   vm.createContext(store);
@@ -63,6 +64,7 @@ function harness(kind = 'hook') {
   if (/function canonDesktopThread\(/.test(storeSource)) storeNames.push('canonDesktopThread');
   if (/function runTiming\(/.test(storeSource)) storeNames.push('runTiming');
   if (/function canonRex\(/.test(storeSource)) storeNames.push('canonRex');
+  if (/function isNotifiable\(/.test(storeSource)) storeNames.push('isNotifiable');
   // The navigation-adapter branch replaces canonDesktopThread with this
   // production module. Load it when present so combined-source checks use
   // the same normalization and key policy rather than a navigation mock.
@@ -203,9 +205,16 @@ for (const kind of ['hook', 'remote-hook', 'herdr', 'remote-herdr']) {
     assert.equal(h.output.length, 1);
     h.update('finished'); h.advance(3000); assert.equal(h.output.length, 2);
   });
-  test(kind + ': cooldown-rejected transition cannot leave old ready queued', () => {
+  // Nothing was sent, so no cooldown applies: the pot is blocked now and the
+  // stale ready must not be the toast that represents it.
+  test(kind + ': unsent candidates do not start the cooldown', () => {
     const h = harness(kind); h.update('working'); h.update('blocked'); h.update('finished'); h.update('blocked'); h.advance(3000);
-    assert.equal(h.output.length, 0);
+    assert.equal(h.output.length, 1); assert.equal(h.output[0][4], 'critical');
+  });
+  test(kind + ': a discarded candidate leaves the next transition free to notify', () => {
+    const h = harness(kind); h.update('working'); h.update('blocked'); h.update('working'); h.advance(3000);
+    h.update('blocked'); h.advance(3000);
+    assert.equal(h.output.length, 1); assert.equal(h.output[0][4], 'critical');
   });
 }
 
@@ -226,9 +235,12 @@ test('remote herdr: host removal cancels candidate', () => {
   assert.equal(h.output.length, 0);
 });
 for (const kind of ['herdr', 'remote-herdr']) {
-  test(kind + ': advanced sequence does not borrow an earlier transition', () => {
-    const h = harness(kind); h.update('working'); h.update('finished'); h.refresh('a', { state_change_seq: 50 }); h.advance(3000);
-    assert.equal(h.output.length, 0);
+  // Approved and blocked again inside one poll: the state reads the same,
+  // but the pot is waiting on a new question and must still be announced.
+  test(kind + ': advanced sequence in the same state re-queues once', () => {
+    const h = harness(kind); h.update('working'); h.update('blocked'); h.refresh('a', { state_change_seq: 50 }); h.advance(3000);
+    assert.equal(h.output.length, 1); assert.equal(h.output[0][4], 'critical');
+    h.refresh('a'); h.advance(3000); assert.equal(h.output.length, 1);
   });
 }
 test('timer: existing trailing-edge deadline is unchanged', () => {

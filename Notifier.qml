@@ -71,10 +71,6 @@ QtObject {
     var now = Date.now()
     if (lastFired[stamp] && (now - lastFired[stamp]) < cooldownMs) return
 
-    var next = Object.assign({}, lastFired)
-    next[stamp] = now
-    lastFired = next
-
     pending.push(pot)
     settle.restart()
   }
@@ -99,6 +95,13 @@ QtObject {
       }
     }
     if (items.length === 0) return
+
+    // Stamped at send, not admission: a discarded candidate told nobody, so
+    // it must not silence the pot's next genuine transition.
+    var now = Date.now()
+    var next = Object.assign({}, lastFired)
+    for (var f = 0; f < items.length; f++) next[items[f].key + ":" + items[f].state] = now
+    lastFired = next
 
     if (items.length === 1) return send(items[0])
 
