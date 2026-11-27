@@ -533,6 +533,21 @@ json.dump(d, open(p, 'w'))" "$X/remote/.claude/settings.json"
      '{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]},{"hooks":[{"type":"command","command":"/usr/bin/false"}],"matcher":"*"},{"hooks":[{"type":"command","command":"echokettle-agent-hook"}]}]}}'
   is "  and the planted link's target is untouched" \
      "$(cat "$X/victim") $(stat -c %a "$X/victim")" "victim 644"
+
+  # A trailing --session used to read as an explicit empty one, so install
+  # ran to completion and dropped the session recorded for the host.
+  local hf="$X/local/kettle/hosts/kettle-test-host" args out
+  "${rx[@]}" install kettle-test-host --session kt >/dev/null 2>&1
+  is "remote install records a named session" "$(sed -n 's/^session=//p' "$hf")" "kt"
+  "${rx[@]}" install kettle-test-host >/dev/null 2>&1
+  is "  and a re-install without --session keeps it" "$(sed -n 's/^session=//p' "$hf")" "kt"
+  for args in "--session" "--session other --session"; do
+    out=$("${rx[@]}" install kettle-test-host $args 2>&1)
+    is "  a trailing --session is refused ($args)" "$out" "--session requires a value"
+    is "    and the recorded session survives" "$(sed -n 's/^session=//p' "$hf")" "kt"
+  done
+  "${rx[@]}" install kettle-test-host --session "" >/dev/null 2>&1
+  is "  an explicit empty --session still clears it" "$(sed -n 's/^session=//p' "$hf")" ""
   rm -rf "$X"
 
   export HOME="$RH"
@@ -1468,13 +1483,6 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "removing a host destroys only it"      "$(l after-remove)" '["-a"]'
 }
 
-# Parser-only remote setup checks: no SSH, config, token or relay execution.
-test_remoteargs() {
-  echo "remoteargs"
-  python3 "$ROOT/test/remote-args.py" "$ROOT/bin/kettle-remote" \
-    && ok "remote argument boundaries" || no "remote argument boundaries"
-}
-
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
 # third parties build against, so pin it.
@@ -1822,7 +1830,7 @@ EOF
   is "an unchanged herdr snapshot does not re-notify" "$(notify_result unchanged-snapshot)" ""
 }
 
-groups=(${1:-structure coherence hook emit remoteargs install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
