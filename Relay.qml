@@ -188,10 +188,19 @@ QtObject {
       // anything that matters — but stripping it would blank the model on
       // every remote pot.
       model: String(raw.model || "").slice(0, 40).replace(/[^A-Za-z0-9._-]/g, ""),
+      // Argv for the jump, which runs rex on `host`, never a server the
+      // payload names.
+      rexSession: rexId(raw.rexSession, "session"),
+      rexBlock: rexId(raw.rexBlock, "block"),
       host: host,
       window: "",
       focused: false
     }
+  }
+
+  function rexId(v, kind) {
+    var s = String(v || "")
+    return new RegExp("^" + kind + ":[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").test(s) ? s : ""
   }
 
   function handleLine(line, reply) {
@@ -233,6 +242,12 @@ QtObject {
 
     if (ev.state === "gone") {
       var gmap = Object.assign({}, resolved); delete gmap[key]; resolved = gmap
+      deliver(ev)
+      return reply("ok")
+    }
+
+    // Rex keeps the nonce inside its pane; there is no window to wait for.
+    if (ev.rexSession && ev.rexBlock) {
       deliver(ev)
       return reply("ok")
     }

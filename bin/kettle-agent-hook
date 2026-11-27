@@ -206,6 +206,14 @@ if (( ! REMOTE )) && [[ $agent == codex && ${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:
   desktop_thread=$sid
 fi
 
+# A Rex pane keeps OSC 2 inside Rex: no OS window ever carries the nonce, so
+# it is addressed by the session and block Rex puts in its environment.
+rex_session="" rex_block=""
+rex_uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+if [[ -z $desktop_thread && ${REX_SESSION:-} =~ ^session:$rex_uuid$ && ${REX_BLOCK:-} =~ ^block:$rex_uuid$ ]]; then
+  rex_session=$REX_SESSION rex_block=$REX_BLOCK
+fi
+
 # ---- window identity -------------------------------------------------------
 # Resolved once per session and cached; a Hyprland window address is stable for
 # the window's lifetime. Claude overwrites the title on its next redraw, which
@@ -257,8 +265,9 @@ for c in cs:
   fi
 }
 
-if [[ -n $desktop_thread ]]; then
-  # A focused app window does not establish which of its chats is visible.
+if [[ -n $desktop_thread || -n $rex_block ]]; then
+  # A focused app window does not establish which of its chats is visible,
+  # and a nonce written into a Rex pane would only retitle its tab.
   addr=""; focused=false
 elif (( REMOTE )); then
   # No hyprctl here — the title is the only thing that crosses ssh, and the
@@ -364,8 +373,11 @@ print(base64.b64encode(json.dumps({
     "focused": sys.argv[6] == "true",
     "model":   sys.argv[8],
     "desktopThread": sys.argv[9],
+    "rexSession": sys.argv[10],
+    "rexBlock": sys.argv[11],
 }).encode()).decode())
-' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" "$desktop_thread" 2>/dev/null)
+' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" "$desktop_thread" \
+  "$rex_session" "$rex_block" 2>/dev/null)
 
 [[ -z $b64 ]] && exit 0
 

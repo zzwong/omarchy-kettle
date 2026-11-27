@@ -1,0 +1,115 @@
+#!/bin/bash
+# Show a Rex block in the Rex app on this machine, then print the window
+# address to raise.
+#
+#   kettle-rex-jump SESSION BLOCK [SSH_HOST] [CLIENT]
+#
+# A Rex pane never surfaces its OSC 2 title as an OS window title, so the
+# title nonce cannot find it. The pane's own REX_SESSION and REX_BLOCK can:
+# the app client is asked to show the session and the server to focus the
+# block. Both are Rex protocol actions, so any app client that implements
+# session.select works, not only one implementation.
+#
+# SSH_HOST is the Kettle remote the pot came from, the host its token
+# authenticated. rex runs there, over the existing ControlMaster, against that
+# host's own socket, so the remote never chooses which server is dialled.
+# Empty means the local server.
+#
+# CLIENT is the optional rexClient setting: a client label, ID, or name such
+# as rex-rune. Without it, the app client connected from this machine is used.
+
+set -uo pipefail
+
+session=${1:-} block=${2:-} host=${3:-} want=${4:-}
+uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+[[ $session =~ ^session:$uuid$ && $block =~ ^block:$uuid$ ]] || { echo "kettle-rex-jump: bad target" >&2; exit 2; }
+[[ -z $host || $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || { echo "kettle-rex-jump: bad host" >&2; exit 2; }
+
+if [[ -n $host ]]; then
+  # Probed through a login shell at `kettle-remote install`, because this ssh
+  # gets none. Remote-controlled, so only a plain absolute path is used.
+  rex_path=$(sed -n 's/^rex=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kettle/hosts/$host" 2>/dev/null | head -1)
+  [[ $rex_path =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] || rex_path=rex
+  # Every argument is an ID validated above or taken from the server's own
+  # reply and validated below, so the remote command line needs no quoting.
+  run_rex() {
+    ssh -o BatchMode=yes -o ControlMaster=no \
+      -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -- "$host" \
+      "$rex_path --autostart=false --timeout 3s $*"
+  }
+else
+  command -v rex >/dev/null 2>&1 || { echo "kettle-rex-jump: rex is not on PATH" >&2; exit 3; }
+  run_rex() { rex --autostart=false --timeout 3s "$@"; }
+fi
+
+clients=$(run_rex client ls --json 2>/dev/null) || {
+  echo "kettle-rex-jump: cannot list Rex clients on ${host:-the local server}" >&2; exit 5; }
+
+nodes=$(hostname -s 2>/dev/null)
+command -v tailscale >/dev/null 2>&1 && nodes+=" $(tailscale status --self --json 2>/dev/null \
+  | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["Self"]["HostName"])' 2>/dev/null)"
+
+# Prints the client ID, then the pid to find its window by (local clients
+# only), then the name it gave the server. Several matches is a refusal:
+# driving someone else's window is worse than driving none.
+picked=$(python3 -I - "$clients" "$want" "$nodes" "${host:+remote}" <<'PY'
+import json, re, sys
+raw, want, nodes, remote = sys.argv[1], sys.argv[2].strip(), sys.argv[3].lower().split(), sys.argv[4]
+try:
+    cs = json.loads(raw).get("clients") or []
+except Exception:
+    cs = []
+apps = [c for c in cs if (c.get("info") or {}).get("kind") == "app"
+        and c.get("connection_state", "connected") == "connected"
+        and re.fullmatch(r"client:[0-9a-f-]{36}", str(c.get("client_id", "")))]
+
+def info(c, k): return str((c.get("info") or {}).get(k) or "")
+def principal(c, k): return (c.get("principal") or {}).get(k)
+
+if want:
+    w = want.lower()
+    hits = [c for c in apps if w in (c["client_id"].lower(), c["client_id"][-6:].lower(),
+                                     info(c, "label").lower(), info(c, "name").lower())]
+else:
+    hits = [c for c in apps if str(principal(c, "node") or "").lower() in nodes]
+    # On the local server every app client is on this machine.
+    if not hits and not remote:
+        hits = [c for c in apps if principal(c, "transport") == "unix"]
+if len(hits) != 1:
+    sys.exit(4 if hits else 5)
+c = hits[0]
+pid = principal(c, "pid") if not remote and principal(c, "transport") == "unix" else ""
+print(c["client_id"])
+print(pid or "")
+print(re.sub(r"[^A-Za-z0-9._-]", "", info(c, "name"))[:15])
+PY
+)
+case $? in
+  0) ;;
+  4) echo "kettle-rex-jump: several Rex apps match; set rexClient to one label, ID or name" >&2; exit 4 ;;
+  *) echo "kettle-rex-jump: no Rex app from this machine is connected to ${host:-the local server}${want:+ as $want}" >&2; exit 5 ;;
+esac
+client=$(sed -n 1p <<< "$picked")
+pid=$(sed -n 2p <<< "$picked")
+name=$(sed -n 3p <<< "$picked")
+
+run_rex -C "$client" do session.select session_id="$session" >/dev/null 2>&1 \
+  || { echo "kettle-rex-jump: the Rex app would not show $session" >&2; exit 6; }
+run_rex -C "$client" focus "$block" -s "$session" >/dev/null 2>&1 \
+  || echo "kettle-rex-jump: could not focus $block" >&2
+
+# All of an app's windows share its pid; the most recently focused one is the
+# one the user last looked at. A remote server only knows the client's name,
+# which is matched against local process names.
+pids=$pid
+[[ -z $pids && -n $name ]] && pids=$(pgrep -x "$name" | tr '\n' ' ')
+[[ -z $pids ]] && exit 0
+hyprctl clients -j 2>/dev/null | python3 -I -c '
+import json, sys
+pids = {int(p) for p in sys.argv[1].split() if p.isdigit()}
+try: cs = json.load(sys.stdin)
+except Exception: sys.exit(0)
+hits = sorted((c for c in cs if c.get("pid") in pids), key=lambda c: c.get("focusHistoryID", 1 << 30))
+if hits: print(hits[0]["address"])
+' "$pids"
+exit 0

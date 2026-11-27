@@ -76,6 +76,11 @@ Panel {
   // Empty falls back to the host name, which matches herdr's default remote
   // window title of "{hostname}: {workspace}".
   readonly property string remoteWindow: setting("remoteWindow", "")
+  // Which Rex app to drive when more than one from this machine is connected
+  // (a label, ID or client name), and a title or class substring for its
+  // window when its pid cannot be learned.
+  readonly property string rexClient: setting("rexClient", "")
+  readonly property string rexWindow: setting("rexWindow", "")
 
   // More than one distinct host among the pots (local counts as one) switches
   // the list into grouped rendering: host header rows, no per-row host tag.
@@ -110,6 +115,14 @@ Panel {
         desktopJumper.pot = pot
         desktopJumper.command = [root.pluginDir + "bin/kettle-codex-jump", pot.desktopThread]
         desktopJumper.running = true
+        return
+      }
+      if (pot.rexSession && pot.rexBlock) {
+        if (rexJumper.running) return
+        rexJumper.pot = pot
+        rexJumper.command = [root.pluginDir + "bin/kettle-rex-jump",
+          pot.rexSession, pot.rexBlock, pot.host || "", root.rexClient]
+        rexJumper.running = true
         return
       }
       if (!pot.windowAddr) {
@@ -164,6 +177,31 @@ Panel {
     onExited: function(code) {
       if (code !== 0) console.warn("kettle: cannot open Codex desktop chat; keeping its pot")
       desktopJumper.pot = null
+    }
+  }
+
+  Process {
+    id: rexJumper
+    property var pot: null
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var addr = store.canonAddr(String(text || "").trim())
+        if (root.rexWindow) root.raise(root.rexWindow)
+        else if (addr) root.focusWindow(addr)
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var msg = String(text || "").trim()
+        if (msg) console.warn("kettle: " + msg)
+      }
+    }
+    onExited: function(code) {
+      if (code === 0 && rexJumper.pot && !store.isLive(rexJumper.pot.state))
+        store.dropHookPot(rexJumper.pot.key)
+      rexJumper.pot = null
     }
   }
 

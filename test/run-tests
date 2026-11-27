@@ -36,8 +36,9 @@ printf '%s' "${3:-}" > "$KETTLE_TEST_OUT"
 STUB
   chmod +x "$tmp/omarchy-shell"
   : > "$tmp/out"
+  # REX_* comes from KT_REX_*, so a suite run inside a Rex pane is not a Rex test.
   KETTLE_TEST_OUT="$tmp/out" PATH="$tmp:$PATH" HYPRLAND_INSTANCE_SIGNATURE=test \
-    HERDR_PANE_ID= HERDR_ENV= \
+    HERDR_PANE_ID= HERDR_ENV= REX_SESSION=${KT_REX_SESSION:-} REX_BLOCK=${KT_REX_BLOCK:-} \
     bash "$ROOT/bin/kettle-agent-hook" <<< "$payload" >/dev/null 2>&1
   # the hook double-backgrounds delivery; give it a moment to land
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s $tmp/out ]] && break; sleep 0.1; done
@@ -170,6 +171,15 @@ test_hook() {
   is "desktop navigation requires a UUID" "$(field "$out" desktopThread)" ""
   out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit "${desktop_event/codex/claude}")
   is "another agent cannot inherit desktop Codex navigation" "$(field "$out" desktopThread)" ""
+
+  local rs="session:01a21a8c-054b-7b14-b25f-5e94db0ba205" rb="block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+  out=$(KT_REX_SESSION=$rs KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
+  is "a Rex pane carries its session" "$(field "$out" rexSession)" "$rs"
+  is "  and its block" "$(field "$out" rexBlock)" "$rb"
+  is "  and no window address" "$(field "$out" window)" ""
+  out=$(KT_REX_SESSION="$rs;x" KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
+  is "a malformed Rex session is not a target" "$(field "$out" rexSession)" ""
+  is "  and drops the block with it" "$(field "$out" rexBlock)" ""
 
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
@@ -641,9 +651,15 @@ QtObject {
     property var command: []
     property var pot: null
   }
+  property QtObject rexJumper: QtObject {
+    property bool running: false
+    property var command: []
+    property var pot: null
+  }
   property string pluginDir: "/plugin/"
   property string herdrWindow: ""
   property string remoteWindow: ""
+  property string rexClient: ""
   property var relay: null
   property string focused: ""
   function close() {}
@@ -690,6 +706,15 @@ EOF
     console.log("DESKTOP:remote:" + store.hookPots["agent:remote:" + a].desktopThread)
     store.ingest({id: a, agent: "claude", state: "working", desktopThread: a})
     console.log("DESKTOP:wrong-agent:" + store.hookPots["agent:" + a].desktopThread)
+    var rs = "session:01a21a8c-054b-7b14-b25f-5e94db0ba205"
+    var rb = "block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+    store.ingest({id: "rx", agent: "claude", state: "finished", host: "box",
+                  rexSession: rs, rexBlock: rb})
+    jump(store.hookPots["agent:box:rx"])
+    console.log("DESKTOP:rex-route:" + JSON.stringify(rexJumper.command))
+    store.ingest({id: "rx2", agent: "claude", state: "working", rexSession: rs, rexBlock: rb + "x"})
+    var bad = store.hookPots["agent:rx2"]
+    console.log("DESKTOP:rex-bad:" + bad.rexBlock + ":" + (bad.rexBlock ? bad.rexSession : ""))
     killer.running = true
   }
   property Process killer: Process {
@@ -716,6 +741,45 @@ EOF
   is "a desktop target must identify its own session" "$(desktop_result mismatch)" ""
   is "remote input cannot navigate local desktop chats" "$(desktop_result remote)" ""
   is "other agents cannot claim desktop navigation" "$(desktop_result wrong-agent)" ""
+  is "rex jump passes session, block, host and client" "$(desktop_result rex-route)" \
+     '["/plugin/bin/kettle-rex-jump","session:01a21a8c-054b-7b14-b25f-5e94db0ba205","block:01a21a8c-0629-7395-8a61-91e88753e1f2","box",""]'
+  is "a bad Rex block drops the whole target" "$(desktop_result rex-bad)" ":"
+
+  # A stub rex answers `client ls` from $R/clients and records every call, so
+  # the helper's choice of client is visible without a Rex server.
+  local R; R=$(mktemp -d); mkdir -p "$R/bin"
+  cat > "$R/bin/rex" <<STUB
+#!/bin/bash
+echo "\$*" >> "$R/calls"
+[[ "\$*" == *"client ls"* ]] && cat "$R/clients"
+exit 0
+STUB
+  chmod +x "$R/bin/rex"
+  local rs="session:01a21a8c-054b-7b14-b25f-5e94db0ba205" rb="block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+  local c1="client:01a21a85-c7cd-72fb-83db-beef13fff003" c2="client:01a21a85-c7cd-72fb-83db-beef13fff004"
+  rexj() { PATH="$R/bin:$PATH" "$ROOT/bin/kettle-rex-jump" "$@" >/dev/null 2>&1; }
+
+  rexj "$rs" "x;y"
+  is "rex jump refuses a malformed block" "$?" "2"
+  rexj "$rs" "$rb" "-oProxyCommand=x"
+  is "rex jump refuses an option-shaped host" "$?" "2"
+  is "  without running rex" "$(cat "$R/calls" 2>/dev/null)" ""
+
+  printf '{"clients":[{"client_id":"%s","info":{"kind":"app","name":"rex-rune"},"principal":{"transport":"unix","pid":1}},{"client_id":"client:01a21a85-c7cd-72fb-83db-beef13fff005","info":{"kind":"cli","name":"rex"},"principal":{"transport":"unix","pid":2}}]}' "$c1" > "$R/clients"
+  rexj "$rs" "$rb"
+  is "any local app client is driven, whatever its name" "$?" "0"
+  has "  and is asked to show the session" "$(cat "$R/calls")" "-C $c1 do session.select session_id=$rs"
+  has "  and to focus the block" "$(cat "$R/calls")" "-C $c1 focus $rb -s $rs"
+
+  : > "$R/calls"
+  printf '{"clients":[{"client_id":"%s","info":{"kind":"app","name":"rex-gui"},"principal":{"transport":"unix","pid":1}},{"client_id":"%s","info":{"kind":"app","name":"rex-rune","label":"Desk"},"principal":{"transport":"unix","pid":3}}]}' "$c1" "$c2" > "$R/clients"
+  rexj "$rs" "$rb"
+  is "two local apps are a refusal, not a guess" "$?" "4"
+  hasnt "  and nothing is selected" "$(cat "$R/calls")" "session.select"
+  rexj "$rs" "$rb" "" "desk"
+  is "rexClient picks one by label" "$?" "0"
+  has "  and drives that one" "$(cat "$R/calls")" "-C $c2 do session.select"
+  rm -rf "$R"
 }
 
 # ----------------------------------------------------------------- structure
@@ -1263,7 +1327,8 @@ $(grep -oE 'state = "(simmering|needs-attention|ready|burnt|murky)"' PotStore.qm
   # which is how the rherdr branch shipped.
   local focuses raises
   focuses=$(grep -vE '^\s*//' Panel.qml | grep -cE 'agent focus|"agent", *"focus"')
-  raises=$(grep -vE '^\s*//' Panel.qml | grep -c 'root\.raise(')
+  # The Rex jump raises its own window, with no herdr focus to pair with.
+  raises=$(grep -vE '^\s*//' Panel.qml | grep -v rexWindow | grep -c 'root\.raise(')
   [[ ${focuses:-0} -ge 2 && ${raises:-0} -eq ${focuses:-0} ]] \
     && ok "every pane focus is paired with a window raise" \
     || no "every pane focus is paired with a window raise" "focus=$focuses raise=$raises"
