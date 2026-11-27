@@ -96,8 +96,11 @@ QtObject {
     var wasFinished = was && (was.state === "ready" || was.state === "burnt")
     if (state === "simmering") {
       // Approval is part of the same run. Repeated working events are not
-      // evidence of a new turn, but returning from a finished pot is.
-      if (!was || wasFinished || start === null) start = now
+      // evidence of a new turn, but returning from a finished pot is. Blocked
+      // is mid-run, so resuming from a blocked pot whose start went unseen
+      // keeps it unknown rather than timing only the tail of the run.
+      if (!was || wasFinished
+          || (start === null && was.state !== "needs-attention")) start = now
       duration = 0
     } else if (state === "ready" || state === "burnt") {
       if (wasFinished) {

@@ -588,8 +588,8 @@ HARNESS
 }
 
 # ----------------------------------------------------------- duration tests
-# Extract the real ingestion methods, but not PotStore's FileViews/processes.
-# Only Date.now() is substituted with the fake clock; lifecycle code is unchanged.
+# The whole PotStore, so a helper added to an ingestion path cannot break the
+# harness; only Date.now() is swapped for a clock the test drives.
 test_duration() {
   echo "duration"
   if ! command -v qs >/dev/null 2>&1; then
@@ -597,6 +597,12 @@ test_duration() {
     return
   fi
   local T out f; T=$(mktemp -d)
+  sed -e 's/Date\.now()/root.testNow/g' \
+      -e '0,/^  id: root$/s//  id: root\n  property real testNow: 0/' \
+    "$ROOT/PotStore.qml" > "$T/PotStore.qml"
+  if ! grep -q 'property real testNow' "$T/PotStore.qml"; then
+    no "duration: PotStore clock patch applied"; rm -rf "$T"; return
+  fi
   {
     cat <<'EOF'
 import QtQuick
@@ -604,36 +610,25 @@ import Quickshell
 import Quickshell.Io
 QtObject {
   id: root
-  property var herdrPots: []
-  property var remotePots: ({})
-  property var hookPots: ({})
-  property var piModels: ({})
-  property real testNow: 0
-  signal potChanged(var pot, string fromState)
-  function resolvePiModel(cwd) { throw new Error("unexpected model lookup") }
-EOF
-    for f in runTiming mapStatus reconcile reconcileRemote ingest agentLabel canonAddr canonDesktopThread canonRex basename; do
-      sed -n "/^  function $f(/,/^  }$/p" "$ROOT/PotStore.qml" | sed 's/Date.now()/root.testNow/g'
-    done
-    cat <<'EOF'
+  property PotStore store: PotStore {}
   function check(name, pot, start, duration) {
     if (!pot || pot.runStart !== start || pot.ranMs !== duration)
       throw new Error(name + ": " + JSON.stringify(pot))
   }
   function deliver(source, state, time, seq) {
-    testNow = time
+    store.testNow = time
     if (source === "hook" || source === "remote-hook") {
-      ingest({ id: "one", agent: "claude", state: state,
-               host: source === "remote-hook" ? "host" : "" })
-      return hookPots[source === "remote-hook" ? "agent:host:one" : "agent:one"]
+      store.ingest({ id: "one", agent: "claude", state: state,
+                     host: source === "remote-hook" ? "host" : "" })
+      return store.hookPots[source === "remote-hook" ? "agent:host:one" : "agent:one"]
     }
     var ag = { pane_id: "one", agent: "claude", agent_status:
       state === "finished" ? "done" : state, state_change_seq: seq }
-    if (source === "local") { reconcile([ag]); return herdrPots[0] }
-    reconcileRemote("host", [ag])
-    return remotePots["rherdr:host:one"]
+    if (source === "local") { store.reconcile([ag]); return store.herdrPots[0] }
+    store.reconcileRemote("host", [ag])
+    return store.remotePots["rherdr:host:one"]
   }
-  function reset() { herdrPots = []; remotePots = ({}); hookPots = ({}) }
+  function reset() { store.herdrPots = []; store.remotePots = ({}); store.hookPots = ({}) }
   Component.onCompleted: {
     try {
       var sources = ["local", "remote", "hook", "remote-hook"]
@@ -645,6 +640,17 @@ EOF
         reset()
         check("first blocked", deliver(s, "blocked", 1000, 1), null, 0)
         check("blocked without start", deliver(s, "finished", 2000, 2), null, 0)
+        reset()
+        deliver(s, "blocked", 1000, 1)
+        check("resumed without start", deliver(s, "working", 2000, 2), null, 0)
+        check("resumed unknown completion", deliver(s, "finished", 3000, 3), null, 0)
+        reset()
+        deliver(s, "working", 1000, 1)
+        check("observed run", deliver(s, "finished", 2000, 2), 1000, 1000)
+        check("blocked after done", deliver(s, "blocked", 3000, 3), null, 0)
+        check("working after unseen start", deliver(s, "working", 4000, 4), null, 0)
+        check("unseen start completion", deliver(s, "finished", 5000, 5), null, 0)
+        check("next observed run", deliver(s, "working", 6000, 6), 6000, 0)
         reset()
         check("zero clock", deliver(s, "working", 0, 1), 0, 0)
         check("zero duration", deliver(s, "finished", 0, 2), 0, 0)
@@ -667,12 +673,12 @@ EOF
       reset()
       deliver("remote", "working", 1000, 1)
       deliver("remote", "finished", 11000, 2)
-      testNow = 61000
-      reconcileRemote("host", [
+      store.testNow = 61000
+      store.reconcileRemote("host", [
         { pane_id: "one", agent: "claude", agent_status: "done", state_change_seq: 2 },
         { pane_id: "two", agent: "claude", agent_status: "working", state_change_seq: 1 }
       ])
-      check("unrelated remote pane", remotePots["rherdr:host:one"], 1000, 10000)
+      check("unrelated remote pane", store.remotePots["rherdr:host:one"], 1000, 10000)
       console.log("DURATION:PASS:unrelated-pane:")
     } catch (e) {
       console.log("DURATION:FAIL:" + String(e))
