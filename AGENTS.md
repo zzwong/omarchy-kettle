@@ -1,6 +1,7 @@
 # AGENTS.md
 
 QML + bash Omarchy bar plugin. No build step; deps are bash and python3.
+Node is test-only (the `notifications` group); CI requires it, local runs skip.
 
 ## QML cache trap
 

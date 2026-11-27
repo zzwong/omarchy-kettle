@@ -17,6 +17,9 @@ QtObject {
 
   // herdr-derived pots, re-derived from the snapshot every tick.
   property var herdrPots: []
+  // potChanged copies its var argument, so object identity cannot mark a
+  // transition across the signal; a number survives the copy.
+  property int notificationSeq: 0
 
   // Everything the bar and panel render: both sources, one list. Written as a
   // binding over both backing properties so either source updating refreshes it.
@@ -147,6 +150,7 @@ QtObject {
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
+        notificationToken: (was && !changed) ? was.notificationToken : ++root.notificationSeq,
         seq: seq,
         paneId: String(ag.pane_id),
         agentKind: String(ag.agent || ""),
@@ -154,7 +158,7 @@ QtObject {
       }
       next.push(pot)
 
-      if (!was || was.state !== state)
+      if (!was || was.state !== state || (changed && isNotifiable(state)))
         root.potChanged(pot, was ? was.state : "")
     }
 
@@ -232,6 +236,7 @@ QtObject {
         project: basename(String(ag.cwd || "")),
         state: state,
         since: (was && !changed) ? was.since : now,
+        notificationToken: (was && !changed) ? was.notificationToken : ++root.notificationSeq,
         runStart: runStart,
         ranMs: ranMs,
         seq: seq,
@@ -242,7 +247,8 @@ QtObject {
         model: ""
       }
       next[key] = pot
-      if (!was || was.state !== state) root.potChanged(pot, was ? was.state : "")
+      if (!was || was.state !== state || (changed && isNotifiable(state)))
+        root.potChanged(pot, was ? was.state : "")
     }
 
     // Anything this host no longer reports is gone.
@@ -320,6 +326,7 @@ QtObject {
       project: basename(String(ev.cwd || "")),
       state: state,
       since: (was && was.state === state) ? was.since : now,
+      notificationToken: (was && was.state === state) ? was.notificationToken : ++root.notificationSeq,
       seq: -1,
       paneId: "",
       // Desktop chats share a window. Window focus must not acknowledge all
@@ -546,6 +553,12 @@ QtObject {
   // Terminal states get a coarse "how long ago", which changes at most once a
   // minute and never looks like a stopwatch.
   readonly property var liveStates: ["simmering", "needs-attention"]
+
+  // A seq bump in the same state (approved and blocked again inside one
+  // poll) is a new transition the queued toast no longer describes.
+  function isNotifiable(state) {
+    return state === "needs-attention" || state === "ready" || state === "burnt"
+  }
 
   function isLive(state) {
     return liveStates.indexOf(state) !== -1
