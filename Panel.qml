@@ -114,11 +114,11 @@ Panel {
         navigator.start(pot)
         return
       }
-      if (pot.rexSession && pot.rexBlock) {
+      if (pot.rexBlock) {
         if (rexJumper.running) return
         rexJumper.pot = pot
         rexJumper.command = [root.pluginDir + "bin/kettle-rex-jump",
-          pot.rexSession, pot.rexBlock, pot.host || "", root.rexClient]
+          pot.rexSession || "", pot.rexBlock, pot.host || "", root.rexClient]
         rexJumper.running = true
         return
       }

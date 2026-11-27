@@ -207,11 +207,15 @@ if (( ! REMOTE )) && [[ $agent == codex && ${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:
 fi
 
 # A Rex pane keeps OSC 2 inside Rex: no OS window ever carries the nonce, so
-# it is addressed by the session and block Rex puts in its environment.
+# it is addressed by the block Rex puts in its environment. REX_SESSION is
+# sent when present, but Rex 0.1.0-snapshot.2646 stopped setting it, and a
+# block can move between sessions, so the jump looks the session up from the
+# block.
 rex_session="" rex_block=""
 rex_uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-if [[ -z $desktop_thread && ${REX_SESSION:-} =~ ^session:$rex_uuid$ && ${REX_BLOCK:-} =~ ^block:$rex_uuid$ ]]; then
-  rex_session=$REX_SESSION rex_block=$REX_BLOCK
+if [[ -z $desktop_thread && ${REX_BLOCK:-} =~ ^block:$rex_uuid$ ]]; then
+  rex_block=$REX_BLOCK
+  [[ ${REX_SESSION:-} =~ ^session:$rex_uuid$ ]] && rex_session=$REX_SESSION
 fi
 
 # ---- window identity -------------------------------------------------------

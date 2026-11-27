@@ -248,9 +248,9 @@ reconnaissance, and future integration qualification.
 
 Sessions in a [Rex](https://www.superlogical.com/rex) pane keep the title
 inside Rex, so the nonce never reaches a window. The hook sends the pane's
-`REX_SESSION` and `REX_BLOCK` instead. A click asks the Rex app on this
-machine to show that session (`session.select`) and the server to focus that
-block, then raises the app's window. These are Rex protocol actions, so any
+`REX_BLOCK` instead. A click looks up the block's session on its host, asks
+the Rex app on this machine to show that session (`session.select`) and the
+server to focus the block, then raises the app's window. These are Rex protocol actions, so any
 app client that implements `session.select` works: rex-gui, rex-rune, or
 another. For a remote pot, `rex` runs on that host over your ControlMaster
 (~190ms a call, measured with `date +%s%N`), at the path `kettle-remote
