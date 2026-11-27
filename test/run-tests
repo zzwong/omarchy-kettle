@@ -1068,6 +1068,27 @@ STUB
   rexj "$rs" "$rb" "" "desk"
   is "rexClient picks one by label" "$?" "0"
   has "  and drives that one" "$(cat "$R/calls")" "-C $c2 do session.select"
+
+  # A remote jump is one ssh round trip: the stub runs the remote command
+  # here, against the stub rex, and counts how often it was called.
+  cat > "$R/bin/ssh" <<STUB
+#!/bin/bash
+echo x >> "$R/ssh-calls"
+while [[ \$# -gt 0 && \$1 != "--" ]]; do shift; done
+shift 2
+exec bash -c "\$*"
+STUB
+  chmod +x "$R/bin/ssh"
+  : > "$R/calls"
+  printf '{"clients":[{"client_id":"%s","info":{"kind":"app","name":"rex-gui","label":"FW13 Pro"},"principal":{"transport":"tailscale","node":"%s"}},{"client_id":"%s","info":{"kind":"app","name":"rex-gui"},"principal":{"transport":"unix","pid":3}}]}' "$c1" "$(hostname -s)" "$c2" > "$R/clients"
+  XDG_CONFIG_HOME="$R" rexj "$rs" "$rb" box
+  is "a remote jump picks this machine's tailscale client" "$?" "0"
+  is "  in one ssh call" "$(wc -l < "$R/ssh-calls")" "1"
+  has "  and drives it" "$(cat "$R/calls")" "-C $c1 do session.select session_id=$rs"
+  : > "$R/calls"
+  XDG_CONFIG_HOME="$R" rexj "$rs" "$rb" box "FW13 Pro"
+  is "a label with a space reaches the remote intact" "$?" "0"
+  has "  and drives that client" "$(cat "$R/calls")" "-C $c1 do session.select"
   rm -rf "$R"
   T=$(mktemp -d)
   copy_store "$T"; cp "$ROOT/Navigator.qml" "$T/"

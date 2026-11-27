@@ -11,9 +11,8 @@
 # session.select works, not only one implementation.
 #
 # SSH_HOST is the Kettle remote the pot came from, the host its token
-# authenticated. rex runs there, over the existing ControlMaster, against that
-# host's own socket, so the remote never chooses which server is dialled.
-# Empty means the local server.
+# authenticated. rex runs there, against that host's own socket, so the
+# remote never chooses which server is dialled. Empty means the local server.
 #
 # CLIENT is the optional rexClient setting: a client label, ID, or name such
 # as rex-rune. Without it, the app client connected from this machine is used.
@@ -25,40 +24,58 @@ uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 [[ $session =~ ^session:$uuid$ && $block =~ ^block:$uuid$ ]] || { echo "kettle-rex-jump: bad target" >&2; exit 2; }
 [[ -z $host || $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || { echo "kettle-rex-jump: bad host" >&2; exit 2; }
 
+rex_path=rex
 if [[ -n $host ]]; then
   # Probed through a login shell at `kettle-remote install`, because this ssh
   # gets none. Remote-controlled, so only a plain absolute path is used.
   rex_path=$(sed -n 's/^rex=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kettle/hosts/$host" 2>/dev/null | head -1)
   [[ $rex_path =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] || rex_path=rex
-  # Every argument is an ID validated above or taken from the server's own
-  # reply and validated below, so the remote command line needs no quoting.
-  run_rex() {
-    ssh -o BatchMode=yes -o ControlMaster=no \
-      -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -- "$host" \
-      "$rex_path --autostart=false --timeout 3s $*"
-  }
-else
-  command -v rex >/dev/null 2>&1 || { echo "kettle-rex-jump: rex is not on PATH" >&2; exit 3; }
-  run_rex() { rex --autostart=false --timeout 3s "$@"; }
+elif ! command -v rex >/dev/null 2>&1; then
+  echo "kettle-rex-jump: rex is not on PATH" >&2; exit 3
 fi
 
-clients=$(run_rex client ls --json 2>/dev/null) || {
-  echo "kettle-rex-jump: cannot list Rex clients on ${host:-the local server}" >&2; exit 5; }
-
-nodes=$(hostname -s 2>/dev/null)
-command -v tailscale >/dev/null 2>&1 && nodes+=" $(tailscale status --self --json 2>/dev/null \
-  | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["Self"]["HostName"])' 2>/dev/null)"
-
-# Prints the client ID, then the pid to find its window by (local clients
-# only), then the name it gave the server. Several matches is a refusal:
-# driving someone else's window is worse than driving none.
-picked=$(python3 -I - "$clients" "$want" "$nodes" "${host:+remote}" <<'PY'
-import json, re, sys
-raw, want, nodes, remote = sys.argv[1], sys.argv[2].strip(), sys.argv[3].lower().split(), sys.argv[4]
+# Listing the clients, choosing one and driving it all happen on the host
+# that runs rex, in one process. framework is 62ms away (ping) and each ssh
+# call over the ControlMaster costs about three round trips, ~190ms measured
+# with `date +%s%N`, so it is one call. Arguments ride in the script as
+# base64 JSON, so a client label with spaces needs no shell quoting on the
+# remote. Python starts once on each side of that call: each start cost
+# 50-120ms here, more than the rex work on the remote.
+args=$(python3 -I - "$rex_path" "$session" "$block" "$want" "${host:+remote}" <<'PY'
+import base64, json, socket, subprocess, sys
+nodes = [socket.gethostname().split(".")[0]]
 try:
-    cs = json.loads(raw).get("clients") or []
+    t = subprocess.run(["tailscale", "status", "--self", "--json"],
+                       capture_output=True, text=True, timeout=2)
+    nodes.append(json.loads(t.stdout)["Self"]["HostName"])
 except Exception:
-    cs = []
+    pass
+rex, session, block, want, remote = sys.argv[1:]
+print(base64.b64encode(json.dumps([rex, session, block, want, " ".join(nodes), remote]).encode()).decode())
+PY
+)
+script="ARGS = '$args'
+$(cat <<'PY'
+import base64, json, re, subprocess, sys
+rex, session, block, want, nodes, remote = json.loads(base64.b64decode(ARGS))
+nodes = nodes.lower().split()
+
+def run(*argv):
+    return subprocess.run([rex, "--autostart=false", "--timeout", "3s", *argv],
+                          capture_output=True, text=True)
+
+def done(code, **out):
+    print(json.dumps(dict(code=code, **out)))
+    sys.exit(0)
+
+try:
+    listing = run("client", "ls", "--json")
+except OSError:
+    done(5)
+try:
+    cs = json.loads(listing.stdout).get("clients") or []
+except Exception:
+    done(5)
 apps = [c for c in cs if (c.get("info") or {}).get("kind") == "app"
         and c.get("connection_state", "connected") == "connected"
         and re.fullmatch(r"client:[0-9a-f-]{36}", str(c.get("client_id", "")))]
@@ -76,40 +93,59 @@ else:
     if not hits and not remote:
         hits = [c for c in apps if principal(c, "transport") == "unix"]
 if len(hits) != 1:
-    sys.exit(4 if hits else 5)
+    done(4 if hits else 5)
 c = hits[0]
+if run("-C", c["client_id"], "do", "session.select", "session_id=" + session).returncode:
+    done(6)
+focused = run("-C", c["client_id"], "focus", block, "-s", session).returncode == 0
 pid = principal(c, "pid") if not remote and principal(c, "transport") == "unix" else ""
-print(c["client_id"])
-print(pid or "")
-print(re.sub(r"[^A-Za-z0-9._-]", "", info(c, "name"))[:15])
+done(0, focused=focused, pid=pid if isinstance(pid, int) else "",
+     name=re.sub(r"[^A-Za-z0-9._-]", "", info(c, "name"))[:15])
+PY
+)"
+
+if [[ -n $host ]]; then
+  out=$(ssh -o BatchMode=yes -o ControlMaster=no \
+    -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -- "$host" python3 - <<< "$script" 2>/dev/null)
+else
+  out=$(python3 -I - <<< "$script" 2>/dev/null)
+fi
+
+# The reply is remote-controlled: only a known code, a bounded integer pid
+# and a charset-checked process name are used. The window is found from
+# Hyprland's own client pids, read once, rather than by scanning every
+# process with pgrep (~180ms here).
+read -r code focused addr < <(python3 -I - "${out:-x}" <<'PY'
+import json, re, subprocess, sys
+try: r = json.loads(sys.argv[1].strip().splitlines()[-1])
+except Exception: r = {}
+code = r.get("code") if r.get("code") in (0, 4, 5, 6) else 5
+pid = r.get("pid") if type(r.get("pid")) is int and 0 < r["pid"] < 1 << 22 else 0
+name = r.get("name") if isinstance(r.get("name"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,15}", r["name"]) else ""
+addr = "-"
+if code == 0 and (pid or name):
+    try: cs = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout)
+    except Exception: cs = []
+    def comm(p):
+        try: return open(f"/proc/{int(p)}/comm").read().strip()
+        except Exception: return ""
+    # All of an app's windows share its pid; the most recently focused one is
+    # the one the user last looked at. A remote server only knows the
+    # client's name, which is matched against the window owner's process name.
+    hits = [c for c in cs if isinstance(c, dict) and (c.get("pid") == pid if pid else comm(c.get("pid", 0)) == name)]
+    hits.sort(key=lambda c: c.get("focusHistoryID", 1 << 30))
+    if hits and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", str(hits[0].get("address", ""))):
+        addr = hits[0]["address"]
+print(code, "1" if r.get("focused") is True else "0", addr)
 PY
 )
-case $? in
+
+case $code in
   0) ;;
   4) echo "kettle-rex-jump: several Rex apps match; set rexClient to one label, ID or name" >&2; exit 4 ;;
+  6) echo "kettle-rex-jump: the Rex app would not show $session" >&2; exit 6 ;;
   *) echo "kettle-rex-jump: no Rex app from this machine is connected to ${host:-the local server}${want:+ as $want}" >&2; exit 5 ;;
 esac
-client=$(sed -n 1p <<< "$picked")
-pid=$(sed -n 2p <<< "$picked")
-name=$(sed -n 3p <<< "$picked")
-
-run_rex -C "$client" do session.select session_id="$session" >/dev/null 2>&1 \
-  || { echo "kettle-rex-jump: the Rex app would not show $session" >&2; exit 6; }
-run_rex -C "$client" focus "$block" -s "$session" >/dev/null 2>&1 \
-  || echo "kettle-rex-jump: could not focus $block" >&2
-
-# All of an app's windows share its pid; the most recently focused one is the
-# one the user last looked at. A remote server only knows the client's name,
-# which is matched against local process names.
-pids=$pid
-[[ -z $pids && -n $name ]] && pids=$(pgrep -x "$name" | tr '\n' ' ')
-[[ -z $pids ]] && exit 0
-hyprctl clients -j 2>/dev/null | python3 -I -c '
-import json, sys
-pids = {int(p) for p in sys.argv[1].split() if p.isdigit()}
-try: cs = json.load(sys.stdin)
-except Exception: sys.exit(0)
-hits = sorted((c for c in cs if c.get("pid") in pids), key=lambda c: c.get("focusHistoryID", 1 << 30))
-if hits: print(hits[0]["address"])
-' "$pids"
+(( focused )) || echo "kettle-rex-jump: could not focus $block" >&2
+[[ $addr != "-" ]] && echo "$addr"
 exit 0
