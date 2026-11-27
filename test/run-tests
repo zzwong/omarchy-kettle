@@ -548,6 +548,36 @@ json.dump(d, open(p, 'w'))" "$X/remote/.claude/settings.json"
   done
   "${rx[@]}" install kettle-test-host --session "" >/dev/null 2>&1
   is "  an explicit empty --session still clears it" "$(sed -n 's/^session=//p' "$hf")" ""
+
+  # The host name becomes the token and host file names and ssh's destination,
+  # so every command refuses one outside HOST_RE before touching either side.
+  # Unchecked, "uninstall ../relay.conf" deleted the local relay.conf.
+  local snap cmd host want bad="" alias="use a Host alias from ~/.ssh/config"
+  snap() { (cd "$X" && find local remote -type f -exec md5sum {} + | sort); }
+  snap=$(snap)
+  for cmd in install test status uninstall; do
+    for host in ../relay.conf a/b user@host ssh://host -oProxyCommand=x; do
+      want="invalid host name: $host — $alias"
+      [[ $cmd == install && $host == -* ]] && want="unknown option: $host"
+      out=$("${rx[@]}" "$cmd" "$host" 2>&1)
+      [[ $? -eq 1 && $out == "$want" ]] || bad+=" $cmd:$host"
+    done
+  done
+  is "remote commands refuse host names outside HOST_RE" "${bad:-none}" "none"
+  is "  and neither side's files change" "$(snap)" "$snap"
+  is "  so uninstall ../relay.conf leaves relay.conf" \
+     "$([[ -f $X/local/kettle/relay.conf ]] && echo kept || echo deleted)" "kept"
+  out=$("${rx[@]}" status 2>&1)
+  has "  status still takes no host" "$out" "relay socket"
+  local long; long=$(printf 'a%.0s' {1..253})
+  out=$("${rx[@]}" status "$long" 2>&1)
+  has "  a 253-character host is accepted" "$out" "$long:"
+  out=$("${rx[@]}" status "${long}a" 2>&1)
+  is "  and a 254-character one refused" "$out" "invalid host name: ${long}a — $alias"
+  out=$("${rx[@]}" status kettle-test-host 2>&1)
+  has "  status reads a valid host's token" "$out" "token      : present"
+  out=$("${rx[@]}" test kettle-test-host 2>&1)
+  has "  test of a valid host gets past the check" "$out" "no relay socket"
   rm -rf "$X"
 
   export HOME="$RH"
@@ -1483,13 +1513,6 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "removing a host destroys only it"      "$(l after-remove)" '["-a"]'
 }
 
-# Validate host keys only; no remote/setup/configuration operations are run.
-test_hostargs() {
-  echo "hostargs"
-  python3 "$ROOT/test/host-args.py" "$ROOT/bin/kettle-remote" \
-    && ok "remote host key boundaries" || no "remote host key boundaries"
-}
-
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
 # third parties build against, so pin it.
@@ -1837,7 +1860,7 @@ EOF
   is "an unchanged herdr snapshot does not re-notify" "$(notify_result unchanged-snapshot)" ""
 }
 
-groups=(${1:-structure coherence hook emit hostargs install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo

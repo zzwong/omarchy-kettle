@@ -30,6 +30,10 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kettle-agent-hook"
 PORT_DEFAULT=47761
 # Lands on a remote command line unquoted.
 SESSION_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+# Names the host's token and host files and is passed to ssh as its
+# destination. Relay.qml only reads token files named this way, and the
+# charset keeps a name from leaving those directories or parsing as an option.
+HOST_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$'
 
 # Same helpers as kettle-install's (the install tests pin them identical),
 # sent to the remote with each script.
@@ -128,8 +132,7 @@ cmd_install() {
     esac
   done
   [[ -n $host ]] || die "usage: kettle-remote install <host> [--session <name>]"
-  # Match the relay token-filename/SSH-alias contract before touching local state.
-  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "invalid host name: $host"
+  [[ -z $host || $host =~ $HOST_RE ]] || die "invalid host name: $host — use a Host alias from ~/.ssh/config"
   [[ -z $session || $session =~ $SESSION_RE ]] || die "invalid session name: $session"
   [[ -x $HOOK ]] || die "hook not found at $HOOK"
   ensure_local
@@ -268,7 +271,7 @@ EOF
 # ---------------------------------------------------------------- test
 cmd_test() {
   local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote test <host>"
-  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "invalid host name: $host"
+  [[ -z $host || $host =~ $HOST_RE ]] || die "invalid host name: $host — use a Host alias from ~/.ssh/config"
   [[ -f $TOKENS/$host ]] || die "no token for $host — run: kettle-remote install $host"
   [[ -S $SOCK ]] || die "no relay socket at $SOCK — is the Omarchy shell running with Kettle enabled?"
   local port token; port=$(port_for); port=${port:-$PORT_DEFAULT}
@@ -322,9 +325,7 @@ except Exception: pass" 2>/dev/null
 # ---------------------------------------------------------------- status
 cmd_status() {
   local host=${1:-}
-  [[ -z $host ]] || {
-  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "invalid host name: $host"
-  }
+  [[ -z $host || $host =~ $HOST_RE ]] || die "invalid host name: $host — use a Host alias from ~/.ssh/config"
   local port; port=$(port_for); port=${port:-$PORT_DEFAULT}
   printf 'relay socket : %s\n' "$([[ -S $SOCK ]] && echo "listening  $SOCK" || echo "ABSENT — shell not running with Kettle")"
   printf 'forward port : %s\n' "$port"
@@ -348,7 +349,7 @@ cmd_status() {
 # ---------------------------------------------------------------- uninstall
 cmd_uninstall() {
   local host=${1:-}; [[ -n $host ]] || die "usage: kettle-remote uninstall <host>"
-  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "invalid host name: $host"
+  [[ -z $host || $host =~ $HOST_RE ]] || die "invalid host name: $host — use a Host alias from ~/.ssh/config"
   # Delete the token first: that alone revokes the host, even if the remote is
   # unreachable and the rest of the cleanup cannot run.
   rm -f "$TOKENS/$host" "$HOSTS/$host" && echo "revoked token for $host"
