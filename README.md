@@ -49,6 +49,9 @@ existing hooks and settings; `--check` reports status without changing
 anything. herdr needs no setup and works fully without `kettle-install`; only
 sessions outside herdr need the hooks.
 
+Only commands that are a bare path to `kettle-agent-hook`, from this clone or
+an older one, count as Kettle's; wrappers and other commands are left alone.
+
 Optionally bind the panel in `~/.config/hypr/bindings.lua`:
 
 ```lua

@@ -31,10 +31,10 @@ PORT_DEFAULT=47761
 # Lands on a remote command line unquoted.
 SESSION_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 
-# Same staging writer as kettle-install's (the install tests pin them
-# identical), sent to the remote with each script.
-WRITE_PY=$(cat <<'PY'
-import json, os, tempfile
+# Same helpers as kettle-install's (the install tests pin them identical),
+# sent to the remote with each script.
+KETTLE_PY=$(cat <<'PY'
+import json, os, shlex, tempfile
 
 def write_file(path, data, mode=None):
     # A fresh mkstemp name, not a fixed path.kettle-tmp: a symlink planted
@@ -59,6 +59,47 @@ def write_file(path, data, mode=None):
 
 def write_json(path, doc, mode=None):
     write_file(path, (json.dumps(doc, indent=2) + "\n").encode(), mode)
+
+def is_ours_hook(entry, hook):
+    # Match the script name, not the path, so --remove from a second clone
+    # still finds the entry the first one wrote. A mention, wrapper, expansion
+    # or lookalike name is someone else's command.
+    if not isinstance(entry, dict) or entry.get("type") != "command":
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    if command == hook:
+        return True
+    name = os.path.basename(hook)
+    if any(char in command for char in "$`;&|<>(){}*?[]\r\n\0"):
+        return False
+    # Older clones wrote the path unquoted, so one under a directory with a
+    # space left a command whose first word is no program. A wrapper's first
+    # word is one, and stays foreign.
+    if (os.path.isabs(command) and command.endswith("/bin/" + name)
+            and not os.path.exists(command.split()[0])):
+        return True
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return len(words) == 1 and os.path.isabs(words[0]) and os.path.basename(words[0]) == name
+
+def without_ours(group, hook):
+    # Drops only Kettle's commands; a mixed group keeps its other commands
+    # and its matcher.
+    kept, removed = [], False
+    for entry in group:
+        original = entry.get("hooks", [])
+        remaining = [h for h in original if not is_ours_hook(h, hook)]
+        if len(remaining) == len(original):
+            kept.append(entry)
+        else:
+            removed = True
+            if remaining:
+                kept.append({**entry, "hooks": remaining})
+    return kept, removed
 PY
 )
 
@@ -142,10 +183,10 @@ cmd_install() {
   # host. `%q` keeps the values inert when the remote shell re-reads them.
   local hook_b64; hook_b64=$(base64 -w0 < "$HOOK")
   {
-    printf 'PORT=%q; TOKEN=%q; HOOK_B64=%q; WRITE_PY=%q\n' "$port" "$token" "$hook_b64" "$WRITE_PY"
+    printf 'PORT=%q; TOKEN=%q; HOOK_B64=%q; KETTLE_PY=%q\n' "$port" "$token" "$hook_b64" "$KETTLE_PY"
     cat <<'REMOTE'
 set -uo pipefail
-py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
+py() { { printf '%s\n' "$KETTLE_PY"; cat; } | python3 - "$@"; }
 mkdir -p ~/.local/bin ~/.config/kettle ~/.local/state/kettle/sessions
 chmod 700 ~/.config/kettle
 cat > ~/.config/kettle/relay.conf <<EOF
@@ -303,9 +344,9 @@ cmd_uninstall() {
   # unreachable and the rest of the cleanup cannot run.
   rm -f "$TOKENS/$host" "$HOSTS/$host" && echo "revoked token for $host"
   {
-    printf 'WRITE_PY=%q\n' "$WRITE_PY"
+    printf 'KETTLE_PY=%q\n' "$KETTLE_PY"
     cat <<'REMOTE'
-py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
+py() { { printf '%s\n' "$KETTLE_PY"; cat; } | python3 - "$@"; }
 rm -f ~/.local/bin/kettle-agent-hook ~/.config/kettle/relay.conf
 rm -rf ~/.local/state/kettle
 py <<'PY'
@@ -320,8 +361,7 @@ for path in (os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("
     except Exception: pass
     hooks = doc.get("hooks", {})
     for ev in list(hooks):
-        kept = [e for e in hooks[ev]
-                if not any("kettle-agent-hook" in h.get("command","") for h in e.get("hooks", []))]
+        kept, _ = without_ours(hooks[ev], os.path.expanduser("~/.local/bin/kettle-agent-hook"))
         if kept: hooks[ev] = kept
         else: del hooks[ev]
     if not hooks: doc.pop("hooks", None)
