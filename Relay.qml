@@ -247,7 +247,7 @@ QtObject {
     }
 
     // Rex keeps the nonce inside its pane; there is no window to wait for.
-    if (ev.rexSession && ev.rexBlock) {
+    if (ev.rexBlock) {
       deliver(ev)
       return reply("ok")
     }

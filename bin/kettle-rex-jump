@@ -2,12 +2,14 @@
 # Show a Rex block in the Rex app on this machine, then print the window
 # address to raise.
 #
-#   kettle-rex-jump SESSION BLOCK [SSH_HOST] [CLIENT]
+#   kettle-rex-jump [SESSION] BLOCK [SSH_HOST] [CLIENT]
+#
+# SESSION may be empty: the block's session is looked up on the host.
 #
 # A Rex pane never surfaces its OSC 2 title as an OS window title, so the
-# title nonce cannot find it. The pane's own REX_SESSION and REX_BLOCK can:
-# the app client is asked to show the session and the server to focus the
-# block. Both are Rex protocol actions, so any app client that implements
+# title nonce cannot find it. The pane's own REX_BLOCK can: the block's
+# session is looked up, the app client is asked to show it and the server to
+# focus the block. Both are Rex protocol actions, so any app client that implements
 # session.select works, not only one implementation.
 #
 # SSH_HOST is the Kettle remote the pot came from, the host its token
@@ -21,7 +23,7 @@ set -uo pipefail
 
 session=${1:-} block=${2:-} host=${3:-} want=${4:-}
 uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-[[ $session =~ ^session:$uuid$ && $block =~ ^block:$uuid$ ]] || { echo "kettle-rex-jump: bad target" >&2; exit 2; }
+[[ ( -z $session || $session =~ ^session:$uuid$ ) && $block =~ ^block:$uuid$ ]] || { echo "kettle-rex-jump: bad target" >&2; exit 2; }
 [[ -z $host || $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || { echo "kettle-rex-jump: bad host" >&2; exit 2; }
 
 rex_path=rex
@@ -95,6 +97,16 @@ else:
 if len(hits) != 1:
     done(4 if hits else 5)
 c = hits[0]
+# The block's current session, not the one the hook saw: Rex stopped
+# exporting REX_SESSION, and a block can be moved to another session.
+try:
+    where = json.loads(run("block", "inspect", block, "--json").stdout).get("session_id")
+except Exception:
+    where = None
+if isinstance(where, str) and re.fullmatch(r"session:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", where):
+    session = where
+if not session:
+    done(7)
 if run("-C", c["client_id"], "do", "session.select", "session_id=" + session).returncode:
     done(6)
 focused = run("-C", c["client_id"], "focus", block, "-s", session).returncode == 0
@@ -119,7 +131,7 @@ read -r code focused addr < <(python3 -I - "${out:-x}" <<'PY'
 import json, re, subprocess, sys
 try: r = json.loads(sys.argv[1].strip().splitlines()[-1])
 except Exception: r = {}
-code = r.get("code") if r.get("code") in (0, 4, 5, 6) else 5
+code = r.get("code") if r.get("code") in (0, 4, 5, 6, 7) else 5
 pid = r.get("pid") if type(r.get("pid")) is int and 0 < r["pid"] < 1 << 22 else 0
 name = r.get("name") if isinstance(r.get("name"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,15}", r["name"]) else ""
 addr = "-"
@@ -143,7 +155,8 @@ PY
 case $code in
   0) ;;
   4) echo "kettle-rex-jump: several Rex apps match; set rexClient to one label, ID or name" >&2; exit 4 ;;
-  6) echo "kettle-rex-jump: the Rex app would not show $session" >&2; exit 6 ;;
+  6) echo "kettle-rex-jump: the Rex app would not show the session of $block" >&2; exit 6 ;;
+  7) echo "kettle-rex-jump: $block is not in any session on ${host:-the local server}" >&2; exit 7 ;;
   *) echo "kettle-rex-jump: no Rex app from this machine is connected to ${host:-the local server}${want:+ as $want}" >&2; exit 5 ;;
 esac
 (( focused )) || echo "kettle-rex-jump: could not focus $block" >&2

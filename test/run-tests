@@ -190,8 +190,11 @@ test_hook() {
   is "  and its block" "$(field "$out" rexBlock)" "$rb"
   is "  and no window address" "$(field "$out" window)" ""
   out=$(KT_REX_SESSION="$rs;x" KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
-  is "a malformed Rex session is not a target" "$(field "$out" rexSession)" ""
-  is "  and drops the block with it" "$(field "$out" rexBlock)" ""
+  is "a malformed Rex session is dropped" "$(field "$out" rexSession)" ""
+  is "  but the block still targets the pane" "$(field "$out" rexBlock)" "$rb"
+  out=$(KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
+  is "a Rex pane without REX_SESSION (Rex 0.1.0-snapshot.2646) still targets its block" \
+     "$(field "$out" rexBlock)" "$rb"
 
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
@@ -1000,6 +1003,10 @@ EOF
                   rexSession: rs, rexBlock: rb})
     jump(store.hookPots["agent:box:rx"])
     console.log("DESKTOP:rex-route:" + JSON.stringify(rexJumper.command))
+    rexJumper.running = false
+    store.ingest({id: "rx5", agent: "claude", state: "finished", host: "box", rexBlock: rb})
+    jump(store.hookPots["agent:box:rx5"])
+    console.log("DESKTOP:rex-block-only:" + JSON.stringify(rexJumper.command))
     store.ingest({id: "rx2", agent: "claude", state: "working", rexSession: rs, rexBlock: rb + "x"})
     var bad = store.hookPots["agent:rx2"]
     console.log("DESKTOP:rex-bad:" + bad.rexBlock + ":" + (bad.rexBlock ? bad.rexSession : ""))
@@ -1033,6 +1040,8 @@ EOF
   is "rex jump passes session, block, host and client" "$(desktop_result rex-route)" \
      '["/plugin/bin/kettle-rex-jump","session:01a21a8c-054b-7b14-b25f-5e94db0ba205","block:01a21a8c-0629-7395-8a61-91e88753e1f2","box",""]'
   is "a bad Rex block drops the whole target" "$(desktop_result rex-bad)" ":"
+  is "a block-only Rex pot still jumps" "$(desktop_result rex-block-only)" \
+     '["/plugin/bin/kettle-rex-jump","","block:01a21a8c-0629-7395-8a61-91e88753e1f2","box",""]'
 
   # A stub rex answers `client ls` from $R/clients and records every call, so
   # the helper's choice of client is visible without a Rex server.
@@ -1041,6 +1050,7 @@ EOF
 #!/bin/bash
 echo "\$*" >> "$R/calls"
 [[ "\$*" == *"client ls"* ]] && cat "$R/clients"
+[[ "\$*" == *"block inspect"* ]] && cat "$R/inspect" 2>/dev/null
 exit 0
 STUB
   chmod +x "$R/bin/rex"
@@ -1068,6 +1078,22 @@ STUB
   rexj "$rs" "$rb" "" "desk"
   is "rexClient picks one by label" "$?" "0"
   has "  and drives that one" "$(cat "$R/calls")" "-C $c2 do session.select"
+
+  # Rex 0.1.0-snapshot.2646 sets no REX_SESSION: the session comes from the
+  # block, which also follows a block moved to another session.
+  local moved="session:01a21a8c-054b-7b14-b25f-5e94db0ba206"
+  printf '{"session_id":"%s","block":{"block_id":"%s"}}' "$moved" "$rb" > "$R/inspect"
+  : > "$R/calls"
+  rexj "" "$rb" "" "desk"
+  is "a block-only target resolves its session" "$?" "0"
+  has "  and shows that session" "$(cat "$R/calls")" "-C $c2 do session.select session_id=$moved"
+  : > "$R/calls"
+  rexj "$rs" "$rb" "" "desk"
+  has "the block's current session wins over a stale one" "$(cat "$R/calls")" "session.select session_id=$moved"
+  rm -f "$R/inspect"; : > "$R/calls"
+  rexj "" "$rb" "" "desk"
+  is "a block in no session is refused" "$?" "7"
+  hasnt "  and nothing is selected" "$(cat "$R/calls")" "session.select"
 
   # A remote jump is one ssh round trip: the stub runs the remote command
   # here, against the stub rex, and counts how often it was called.

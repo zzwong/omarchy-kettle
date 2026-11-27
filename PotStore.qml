@@ -296,7 +296,7 @@ QtObject {
     var navigation = Navigation.normalize(ev)
     // The local IPC path skips Relay.sanitize, so these are checked here too:
     // both become argv for the rex jump.
-    var rexSession = canonRex(ev.rexSession, "session")
+    var rexBlock = canonRex(ev.rexBlock, "block")
     var map = Object.assign({}, hookPots)
     // Host-scoped: two machines can hand out the same session id, and a
     // remote pot must never overwrite a local one.
@@ -347,8 +347,8 @@ QtObject {
       navigationError: navigation.error,
       desktopNavigation: navigation.desktop,
       revision: ++hookRevision,
-      rexSession: rexSession,
-      rexBlock: rexSession ? canonRex(ev.rexBlock, "block") : "",
+      rexSession: rexBlock ? canonRex(ev.rexSession, "session") : "",
+      rexBlock: rexBlock,
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       message: String(ev.message || "").slice(0, 160),
