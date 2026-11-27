@@ -273,6 +273,9 @@ QtObject {
     if (!ev || !ev.id) return
     var desktopThread = ev.agent === "codex" && !ev.host && ev.desktopThread === ev.id
       ? canonDesktopThread(ev.desktopThread) : ""
+    // The local IPC path skips Relay.sanitize, so these are checked here too:
+    // both become argv for the rex jump.
+    var rexSession = canonRex(ev.rexSession, "session")
     var map = Object.assign({}, hookPots)
     // Host-scoped: two machines can hand out the same session id, and a
     // remote pot must never overwrite a local one.
@@ -323,6 +326,10 @@ QtObject {
       // of them, or suppress completion for a chat that was never opened.
       windowAddr: desktopThread ? "" : canonAddr(ev.window),
       desktopThread: desktopThread,
+      rexSession: rexSession,
+      rexBlock: rexSession ? canonRex(ev.rexBlock, "block") : "",
+      rexServer: rexSession && /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(String(ev.rexServer || ""))
+        ? String(ev.rexServer) : "",
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       message: String(ev.message || "").slice(0, 160),
@@ -522,6 +529,11 @@ QtObject {
   function canonDesktopThread(id) {
     var s = String(id || "")
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : ""
+  }
+
+  function canonRex(id, kind) {
+    var s = String(id || "")
+    return new RegExp("^" + kind + ":[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").test(s) ? s : ""
   }
 
   function basename(p) {

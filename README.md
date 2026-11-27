@@ -234,6 +234,17 @@ opener and window lookup succeed; an opener failure keeps its pot. With
 multiple desktop windows, Kettle uses the app window activated by the URL
 handler rather than guessing.
 
+Sessions in a [Rex](https://www.superlogical.com/rex) pane keep the title
+inside Rex, so the nonce never reaches a window. The hook sends the pane's
+`REX_SESSION` and `REX_BLOCK` instead, and a click tells rex-gui to show that
+session (`session.select`) and the server to focus that block, then raises
+rex-gui. A remote host also reports its tailscale name, which Kettle accepts
+only if it matches one of rex-gui's configured remote hosts; the configured
+address is the one dialled. The `rex` CLI must be on PATH locally. rex-gui's
+`client_label` names its client; without one, Kettle looks for the single app
+client from this machine. A Rex pot cannot tell whether you were watching it,
+so a finished one always shows.
+
 ### `herdrWindow`
 
 herdr sets no window title of its own, so on a single-process terminal there is

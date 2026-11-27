@@ -36,8 +36,9 @@ printf '%s' "${3:-}" > "$KETTLE_TEST_OUT"
 STUB
   chmod +x "$tmp/omarchy-shell"
   : > "$tmp/out"
+  # REX_* comes from KT_REX_*, so a suite run inside a Rex pane is not a Rex test.
   KETTLE_TEST_OUT="$tmp/out" PATH="$tmp:$PATH" HYPRLAND_INSTANCE_SIGNATURE=test \
-    HERDR_PANE_ID= HERDR_ENV= \
+    HERDR_PANE_ID= HERDR_ENV= REX_SESSION=${KT_REX_SESSION:-} REX_BLOCK=${KT_REX_BLOCK:-} \
     bash "$ROOT/bin/kettle-agent-hook" <<< "$payload" >/dev/null 2>&1
   # the hook double-backgrounds delivery; give it a moment to land
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s $tmp/out ]] && break; sleep 0.1; done
@@ -170,6 +171,16 @@ test_hook() {
   is "desktop navigation requires a UUID" "$(field "$out" desktopThread)" ""
   out=$(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' hook_emit "${desktop_event/codex/claude}")
   is "another agent cannot inherit desktop Codex navigation" "$(field "$out" desktopThread)" ""
+
+  local rs="session:01a21a8c-054b-7b14-b25f-5e94db0ba205" rb="block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+  out=$(KT_REX_SESSION=$rs KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
+  is "a Rex pane carries its session" "$(field "$out" rexSession)" "$rs"
+  is "  and its block" "$(field "$out" rexBlock)" "$rb"
+  is "  and no window address" "$(field "$out" window)" ""
+  is "  and a local pane names no server" "$(field "$out" rexServer)" ""
+  out=$(KT_REX_SESSION="$rs;x" KT_REX_BLOCK=$rb hook_emit '{"hook_event_name":"Stop","session_id":"rx1","cwd":"/p"}')
+  is "a malformed Rex session is not a target" "$(field "$out" rexSession)" ""
+  is "  and drops the block with it" "$(field "$out" rexBlock)" ""
 
   out=$(hook_emit '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p"}')
   is "unknown event emits nothing" "$out" ""
@@ -641,6 +652,11 @@ QtObject {
     property var command: []
     property var pot: null
   }
+  property QtObject rexJumper: QtObject {
+    property bool running: false
+    property var command: []
+    property var pot: null
+  }
   property string pluginDir: "/plugin/"
   property string herdrWindow: ""
   property string remoteWindow: ""
@@ -690,6 +706,18 @@ EOF
     console.log("DESKTOP:remote:" + store.hookPots["agent:remote:" + a].desktopThread)
     store.ingest({id: a, agent: "claude", state: "working", desktopThread: a})
     console.log("DESKTOP:wrong-agent:" + store.hookPots["agent:" + a].desktopThread)
+    var rs = "session:01a21a8c-054b-7b14-b25f-5e94db0ba205"
+    var rb = "block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+    store.ingest({id: "rx", agent: "claude", state: "finished", host: "box",
+                  rexSession: rs, rexBlock: rb, rexServer: "box.example.ts.net"})
+    jump(store.hookPots["agent:box:rx"])
+    console.log("DESKTOP:rex-route:" + JSON.stringify(rexJumper.command))
+    store.ingest({id: "rx2", agent: "claude", state: "working", rexSession: rs, rexBlock: rb + "x"})
+    var bad = store.hookPots["agent:rx2"]
+    console.log("DESKTOP:rex-bad:" + bad.rexBlock + ":" + (bad.rexBlock ? bad.rexSession : ""))
+    store.ingest({id: "rx3", agent: "claude", state: "working", rexSession: rs, rexBlock: rb,
+                  rexServer: "-oProxyCommand=x"})
+    console.log("DESKTOP:rex-server:" + store.hookPots["agent:rx3"].rexServer)
     killer.running = true
   }
   property Process killer: Process {
@@ -716,6 +744,23 @@ EOF
   is "a desktop target must identify its own session" "$(desktop_result mismatch)" ""
   is "remote input cannot navigate local desktop chats" "$(desktop_result remote)" ""
   is "other agents cannot claim desktop navigation" "$(desktop_result wrong-agent)" ""
+  is "rex jump passes session, block, server and host" "$(desktop_result rex-route)" \
+     '["/plugin/bin/kettle-rex-jump","session:01a21a8c-054b-7b14-b25f-5e94db0ba205","block:01a21a8c-0629-7395-8a61-91e88753e1f2","box.example.ts.net","box"]'
+  is "a bad Rex block drops the whole target" "$(desktop_result rex-bad)" ":"
+  is "a hostile Rex server name is dropped" "$(desktop_result rex-server)" ""
+
+  # The helper must refuse before any rex call: a stub that records being
+  # run proves it never dialled.
+  local R; R=$(mktemp -d); mkdir -p "$R/bin" "$R/config/rex-gui"
+  printf '#!/bin/bash\necho called >> "%s/called"\n' "$R" > "$R/bin/rex"; chmod +x "$R/bin/rex"
+  echo '{"remote_hosts":[{"address":"https://box.example.ts.net"}]}' > "$R/config/rex-gui/settings.json"
+  local rs="session:01a21a8c-054b-7b14-b25f-5e94db0ba205" rb="block:01a21a8c-0629-7395-8a61-91e88753e1f2"
+  PATH="$R/bin:$PATH" XDG_CONFIG_HOME="$R/config" "$ROOT/bin/kettle-rex-jump" "$rs" "x;y" >/dev/null 2>&1
+  is "rex jump refuses a malformed block" "$?" "2"
+  PATH="$R/bin:$PATH" XDG_CONFIG_HOME="$R/config" "$ROOT/bin/kettle-rex-jump" "$rs" "$rb" evil.example.com h >/dev/null 2>&1
+  is "rex jump refuses a server rex-gui does not list" "$?" "4"
+  is "  without dialling anything" "$(cat "$R/called" 2>/dev/null)" ""
+  rm -rf "$R"
 }
 
 # ----------------------------------------------------------------- structure

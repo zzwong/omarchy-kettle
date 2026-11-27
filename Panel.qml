@@ -112,6 +112,14 @@ Panel {
         desktopJumper.running = true
         return
       }
+      if (pot.rexSession && pot.rexBlock) {
+        if (rexJumper.running) return
+        rexJumper.pot = pot
+        rexJumper.command = [root.pluginDir + "bin/kettle-rex-jump",
+          pot.rexSession, pot.rexBlock, pot.rexServer || "", pot.host || ""]
+        rexJumper.running = true
+        return
+      }
       if (!pot.windowAddr) {
         console.warn("kettle: this session has no navigation target")
         return
@@ -164,6 +172,30 @@ Panel {
     onExited: function(code) {
       if (code !== 0) console.warn("kettle: cannot open Codex desktop chat; keeping its pot")
       desktopJumper.pot = null
+    }
+  }
+
+  Process {
+    id: rexJumper
+    property var pot: null
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var addr = store.canonAddr(String(text || "").trim())
+        if (addr) root.focusWindow(addr)
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var msg = String(text || "").trim()
+        if (msg) console.warn("kettle: " + msg)
+      }
+    }
+    onExited: function(code) {
+      if (code === 0 && rexJumper.pot && !store.isLive(rexJumper.pot.state))
+        store.dropHookPot(rexJumper.pot.key)
+      rexJumper.pot = null
     }
   }
 
