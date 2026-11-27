@@ -48,6 +48,37 @@ esac
 
 [[ -x $HOOK ]] || { echo "kettle-agent-hook not executable at $HOOK" >&2; exit 1; }
 
+# Shared by every embedded writer below; py() prepends it to the script.
+WRITE_PY=$(cat <<'PY'
+import json, os, tempfile
+
+def write_file(path, data, mode=None):
+    # A fresh mkstemp name, not a fixed path.kettle-tmp: a symlink planted
+    # there was followed by the truncating open and its target overwritten.
+    # os.replace carries the stage's mode onto path; these files hold API keys.
+    if mode is None:
+        mode = os.stat(path).st_mode & 0o7777 if os.path.exists(path) else 0o600
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".kettle-tmp.", dir=parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+def write_json(path, doc, mode=None):
+    write_file(path, (json.dumps(doc, indent=2) + "\n").encode(), mode)
+PY
+)
+py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
+
 # merge <file> <mode> <hook> <style> <unit> <async> <events...>
 #   style: "wrapped" nests events under a "hooks" key (Claude, Codex, Qwen,
 #          Gemini, Grok); "bare" puts event names at the top level (droid's
@@ -59,39 +90,8 @@ esac
 #          hook backgrounds itself either way, so sync execution is cheap.
 merge() {
   local file=$1 mode=$2 hook=$3 style=$4 unit=$5 use_async=$6; shift 6
-  python3 - "$file" "$mode" "$hook" "$style" "$unit" "$use_async" "$@" <<'PY'
-import json, os, sys, tempfile
-
-def write_config(path, doc):
-    parent = os.path.dirname(path)
-    os.makedirs(parent, exist_ok=True)
-    perms = os.stat(path).st_mode & 0o7777 if os.path.exists(path) else 0o600
-    # A unique exclusive stage never truncates an unrelated predictable sibling.
-    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".kettle-tmp.", dir=parent)
-    identity = None
-    try:
-        identity = os.fstat(fd)
-        os.fchmod(fd, perms)
-        # Keep the descriptor live through publication and identity-gated cleanup.
-        with os.fdopen(fd, "w", closefd=False) as f:
-            json.dump(doc, f, indent=2)
-            f.write("\n")
-        if not os.path.samestat(identity, os.lstat(tmp)):
-            raise OSError("installer staging identity changed")
-        os.replace(tmp, path)
-    finally:
-        try:
-            if identity is not None:
-                try:
-                    current = os.lstat(tmp)
-                except FileNotFoundError:
-                    pass
-                else:
-                    if os.path.samestat(identity, current):
-                        os.unlink(tmp)
-        finally:
-            # Never retry a possibly reused descriptor after a close error.
-            os.close(fd)
+  py "$file" "$mode" "$hook" "$style" "$unit" "$use_async" "$@" <<'PY'
+import json, os, sys
 
 path, mode, hook, style, unit, use_async, *events = sys.argv[1:]
 
@@ -168,7 +168,7 @@ if style != "bare" and not hooks:
     doc.pop("hooks", None)
 
 if changed:
-    write_config(path, doc)
+    write_json(path, doc)
     print(f"  {'removed from' if mode == 'remove' else 'wrote'} {path}")
 else:
     print(f"  {path} already up to date")
@@ -193,17 +193,15 @@ grok_file() {
       fi ;;
     install)
       mkdir -p "$(dirname "$GROK_HOOK_FILE")"
-      python3 - "$GROK_HOOK_FILE" "$HOOK" "${GROK_EVENTS[@]}" <<'PY'
-import json, sys
+      py "$GROK_HOOK_FILE" "$HOOK" "${GROK_EVENTS[@]}" <<'PY'
+import sys
 path, hook, *events = sys.argv[1:]
 doc = {"hooks": {
     ev: [{"hooks": [{"type": "command", "command": hook,
                      "timeout": 10 if ev == "SessionStart" else 5}]}]
     for ev in events
 }}
-with open(path, "w") as f:
-    json.dump(doc, f, indent=2)
-    f.write("\n")
+write_json(path, doc)
 print(f"  wrote {path}")
 PY
       ;;
@@ -231,40 +229,8 @@ PY
     return
   }
   mkdir -p "$(dirname "$PI_SETTINGS")"
-  python3 - "$PI_SETTINGS" "$PI_EXTENSION" "$mode" <<'PY'
-import json, os, shutil, sys, tempfile
-
-def write_config(path, doc):
-    parent = os.path.dirname(path)
-    os.makedirs(parent, exist_ok=True)
-    perms = os.stat(path).st_mode & 0o7777 if os.path.exists(path) else 0o600
-    # A unique exclusive stage never truncates an unrelated predictable sibling.
-    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".kettle-tmp.", dir=parent)
-    identity = None
-    try:
-        identity = os.fstat(fd)
-        os.fchmod(fd, perms)
-        # Keep the descriptor live through publication and identity-gated cleanup.
-        with os.fdopen(fd, "w", closefd=False) as f:
-            json.dump(doc, f, indent=2)
-            f.write("\n")
-        if not os.path.samestat(identity, os.lstat(tmp)):
-            raise OSError("installer staging identity changed")
-        os.replace(tmp, path)
-    finally:
-        try:
-            if identity is not None:
-                try:
-                    current = os.lstat(tmp)
-                except FileNotFoundError:
-                    pass
-                else:
-                    if os.path.samestat(identity, current):
-                        os.unlink(tmp)
-        finally:
-            # Never retry a possibly reused descriptor after a close error.
-            os.close(fd)
-
+  py "$PI_SETTINGS" "$PI_EXTENSION" "$mode" <<'PY'
+import json, os, sys
 path, ext, mode = sys.argv[1:]
 bak = path + ".kettle-bak"
 if mode != "install":
@@ -281,9 +247,11 @@ if os.path.exists(path):
         print(f"  ! {path} is not valid JSON; skipped")
         sys.exit(0)
     if mode == "install":
-        # copy2 keeps the mode; a re-dump at the umask would publish a 0600 file.
+        # Staged like the config: shutil.copy2 wrote through a symlink planted
+        # at .kettle-bak, copying the API key to its target. os.replace swaps
+        # the link itself.
         try:
-            shutil.copy2(path, bak)
+            write_file(bak, open(path, "rb").read(), os.stat(path).st_mode & 0o7777)
         except Exception: pass
 exts = list(doc.get("extensions") or [])
 if mode == "install":
@@ -300,7 +268,7 @@ if exts:
     doc["extensions"] = exts
 else:
     doc.pop("extensions", None)
-write_config(path, doc)
+write_json(path, doc)
 print(f"  {'wrote' if mode == 'install' else 'cleaned'} {path}")
 PY
 }
