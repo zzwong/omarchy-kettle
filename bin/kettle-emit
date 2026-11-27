@@ -30,6 +30,13 @@ usage() {
 }
 
 while (( $# > 0 )); do
+  # shift 2 fails without consuming argv when a value is missing; without
+  # errexit that would spin forever instead of reporting a caller error.
+  case $1 in
+    --agent|--id|--state|--cwd|--model|--message|--window)
+      (( $# >= 2 )) || { echo "kettle-emit: $1 requires a value" >&2; exit 1; }
+      ;;
+  esac
   case $1 in
     --agent)   agent=${2:-}; shift 2 ;;
     --id)      id=${2:-}; shift 2 ;;
