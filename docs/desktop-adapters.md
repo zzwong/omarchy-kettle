@@ -39,10 +39,10 @@ past/future app versions. Requalify changes to the app handler or window model.
 
 `opened` means the URL command accepted an exact-thread request and Kettle
 resolved/focused an allowed window. It is **not** an independent app receipt
-that the conversation was selected or read. A future adapter using `selected`
-must provide the matching app thread ID (and instance, when supplied) from a
-native receipt. A workspace-open or window-activation API cannot qualify as
-either existing-chat receipt.
+that the conversation was selected or read. `opened` is the only receipt v1
+accepts; an adapter that can confirm selection natively would add its own
+receipt type alongside its descriptor. A workspace-open or window-activation
+API cannot qualify as an existing-chat receipt.
 
 ## Event contract
 
@@ -119,9 +119,7 @@ Success is one JSON object, followed by a newline:
 {"version":1,"requestId":"jump_1","ok":true,"resolution":"opened","window":"0x1234"}
 ```
 
-For `selected`, also include `selectedThreadId` equal to the request's thread;
-an optional `instance` must match. An adapter requiring `selected` cannot
-downgrade to `opened`. Success requires zero exit status and a canonical
+Any other `resolution`, and any extra field, is rejected. Success requires zero exit status and a canonical
 `0x`-prefixed, 1–16 digit hex address. The helper checks allowed window identity
 before focus, dispatches focus and cursor restoration in one batch, then
 requires that address/class to be active. Cursor acquisition/dispatch/verification
@@ -160,11 +158,9 @@ cancellation; cancellation cannot undo that, but cannot acknowledge work.
    local configuration, never events. Add configuration/schema only when a
    real adapter requires it; v1 supports only the default Codex instance.
 3. Add a static descriptor in `Navigation.js`: helper basename, exact ID grammar,
-   allowed instance aliases, and minimum receipt policy. Do not register a
+   and allowed instance aliases. Do not register a
    candidate until qualification is available. Add an app helper using the
    shared runner/validation, or an equivalently bounded implementation.
-   `serve()` currently emits `opened`; a selection-confirming helper must emit
-   its matching native receipt rather than reuse that weaker convenience path.
 4. Make the producer emit the canonical target on every event. Do not add
    provider/app branches to Panel or PotStore. Keep lifecycle subscription
    separate; if needed later, use one bounded persistent bridge per instance
@@ -172,18 +168,17 @@ cancellation; cancellation cannot undo that, but cannot acknowledge work.
 5. Add redacted fixtures and transport/contract tests for grammar, instance
    mapping, malformed/oversized output, auth/thread/window errors, timeout,
    reconnect if relevant, and no-create navigation. Test the common controller
-   with the adapter's receipt policy. `./test/run-tests desktop` runs Python
+   with the adapter's descriptor. `./test/run-tests desktop` runs Python
    transport tests and actual Quickshell contract/controller/store tests.
 6. Live-qualify before advertising support. Update the capability matrix and
    setup/remove/update instructions with exact versions and limitations.
 
 The production registry has no configuration/module loader for arbitrary
 adapters. The synthetic descriptors in `test/navigation-contract.qml` use a
-`task_*` ID with two instances and an integer ID with a selection receipt;
-they are arguments to pure contract functions and injected into a copied
-registry inside the isolated controller test. Both run through the real
-controller with stubbed helpers. Neither is a shipped registry entry or an
-application integration.
+`task_*` ID with two instances and an integer ID. They are arguments to the
+pure contract functions (validation, scoped keys, receipt checks); the
+controller test drives the shipped Codex descriptor with a stubbed helper.
+Neither is a shipped registry entry or an application integration.
 
 ## Optional candidates: source reconnaissance, 2026-09-30
 

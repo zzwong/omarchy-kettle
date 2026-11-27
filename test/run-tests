@@ -23,6 +23,16 @@ is()   { [[ "$2" == "$3" ]] && ok "$1" || no "$1" "want [$3] got [$2]"; }
 has()  { [[ "$2" == *"$3"* ]] && ok "$1" || no "$1" "want substring [$3] in [$2]"; }
 hasnt(){ [[ "$2" != *"$3"* ]] && ok "$1" || no "$1" "unwanted substring [$3] in [$2]"; }
 
+# A harness that copies PotStore.qml without its file imports fails to load,
+# and every assertion behind it fails with nothing pointing at the cause.
+store_imports() {
+  local f
+  for f in $(sed -n 's/^import "\([^"]*\)".*/\1/p' "$ROOT/PotStore.qml"); do
+    cp "$ROOT/$f" "$1/"
+  done
+}
+copy_store() { cp "$ROOT/PotStore.qml" "$1/"; store_imports "$1"; }
+
 # ---------------------------------------------------------------- hook tests
 # The hook is driven by stdin JSON and emits a base64 payload. We stub the
 # delivery command so nothing has to be running, then decode what it tried to
@@ -753,7 +763,7 @@ test_duration() {
   sed -e 's/Date\.now()/root.testNow/g' \
       -e '0,/^  id: root$/s//  id: root\n  property real testNow: 0/' \
     "$ROOT/PotStore.qml" > "$T/PotStore.qml"
-  cp "$ROOT/Navigation.js" "$T/"
+  store_imports "$T"
   if ! grep -q 'property real testNow' "$T/PotStore.qml"; then
     no "duration: PotStore clock patch applied"; rm -rf "$T"; return
   fi
@@ -863,7 +873,7 @@ test_hookwindows() {
   fi
 
   local T; T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$T/"
+  copy_store "$T"
   cat > "$T/harness.qml" <<'EOF'
 import QtQuick
 import Quickshell
@@ -904,7 +914,7 @@ test_desktop() {
     return
   fi
   local T; T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$T/"
+  copy_store "$T"
   {
     cat <<'EOF'
 import QtQuick
@@ -1060,7 +1070,7 @@ STUB
   has "  and drives that one" "$(cat "$R/calls")" "-C $c2 do session.select"
   rm -rf "$R"
   T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$ROOT/Navigator.qml" "$T/"
+  copy_store "$T"; cp "$ROOT/Navigator.qml" "$T/"
   cp "$ROOT/test/navigation-contract.qml" "$ROOT/test/navigation-controller.qml" "$T/"
   mkdir -p "$T/bin"
   cat > "$T/bin/kettle-codex-jump" <<'PYHELPER'
@@ -1072,8 +1082,6 @@ if mode == "slow": time.sleep(5)
 else: time.sleep(0.1)
 receipt = {"version": 1, "requestId": request["requestId"], "ok": True,
            "resolution": "opened", "window": "0x1234"}
-if request["target"]["app"] == "test-select":
-    receipt.update(resolution="selected", selectedThreadId=request["target"]["threadId"])
 if mode == "mismatch": receipt["requestId"] = "old"
 if mode == "malformed": print("not JSON")
 elif mode == "oversized": print("x" * 10000)
@@ -1084,20 +1092,56 @@ PYHELPER
   out=$(cd "$T" && timeout 15 qs --no-color -p navigation-contract.qml 2>&1)
   has "desktop contract validates synthetic adapters, scoping and receipts" "$out" "CONTRACT:PASS:"
   [[ $out != *"CONTRACT:PASS:"* ]] && printf '%s\n' "$out"
-  # Add fixtures only to the isolated controller harness, after asserting that
-  # the production registry rejects them. Events/config cannot register these.
-  cat >> "$T/Navigation.js" <<'JSFIXTURES'
-adapters["test-open"] = {helper: "kettle-test-jump", instances: ["default", "nightly"],
-  thread: /^task_[a-z0-9]+$/, receipt: "opened"}
-adapters["test-select"] = {helper: "kettle-test-jump", instances: ["default"],
-  thread: /^[0-9]{1,8}$/, receipt: "selected"}
-JSFIXTURES
-  cp "$T/bin/kettle-codex-jump" "$T/bin/kettle-test-jump"
   out=$(cd "$T" && timeout 15 qs --no-color -p navigation-controller.qml 2>&1)
   has "desktop controller supervises execution, cancellation and stale receipts" "$out" "CONTROLLER:PASS:"
   [[ $out != *"CONTROLLER:PASS:"* ]] && printf '%s\n' "$out"
   rm -rf "$T"
 
+  # The panel's real jump and close handling around the real Navigator: a
+  # failure reopens with its message, and closing clears it.
+  T=$(mktemp -d)
+  copy_store "$T"; cp "$ROOT/Navigator.qml" "$T/"
+  {
+    cat <<'EOF'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+QtObject {
+  id: root
+  property PotStore store: PotStore {}
+  property Navigator navigator: Navigator {
+    store: root.store
+    onFailed: function(message) { root.open() }
+  }
+  property bool opened: true
+  property int cursor: 0
+  property QtObject list: QtObject { property real contentY: 0 }
+  property QtObject rexJumper: QtObject { property bool running: false }
+  function open() { opened = true }
+  function close() { opened = false }
+  function focusWindow(addr) {}
+EOF
+    sed -n '/^  onOpenedChanged:/p' "$ROOT/Panel.qml"
+    sed -n '/^  function jump(/,/^  }$/p' "$ROOT/Panel.qml"
+    cat <<'EOF'
+  Component.onCompleted: {
+    store.ingest({id: "info", agent: "x", state: "finished"})
+    jump(store.hookPots["agent:info"])
+    console.log("OUTCOME:failed:" + opened + ":" + (navigator.outcome.length > 0))
+    close()
+    open()
+    console.log("OUTCOME:reopened:" + JSON.stringify(navigator.outcome))
+    killer.running = true
+  }
+  property Process killer: Process { command: ["kill", "-9", String(Quickshell.processId)] }
+}
+EOF
+  } > "$T/harness.qml"
+  out=$(cd "$T" && timeout 15 qs --no-color -p harness.qml 2>&1)
+  rm -rf "$T"
+  outcome_result() { printf '%s\n' "$out" | sed -n "s/.*OUTCOME:$1://p" | head -1; }
+  is "a failed jump reopens the panel with its message" "$(outcome_result failed)" "true:true"
+  is "closing the panel clears a stale failure message" "$(outcome_result reopened)" '""'
 }
 
 # ----------------------------------------------------------------- structure
@@ -1853,7 +1897,7 @@ test_notifyqml() {
     return
   fi
   local T; T=$(mktemp -d)
-  cp "$ROOT/PotStore.qml" "$ROOT/Navigation.js" "$T/"
+  copy_store "$T"
   sed 's/Quickshell\.execDetached(/root.record(/' "$ROOT/Notifier.qml" | sed '$d' > "$T/Notifier.qml"
   cat >> "$T/Notifier.qml" <<'EOF'
   property var sent: []

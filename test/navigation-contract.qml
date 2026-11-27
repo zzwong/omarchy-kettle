@@ -23,9 +23,9 @@ QtObject {
       // receipt policy. Neither is registered in the shipped application.
       var fixtures = {
         "test-open": {helper: "not-executable", instances: ["default", "nightly"],
-          thread: /^task_[a-z0-9]+$/, receipt: "opened"},
+          thread: /^task_[a-z0-9]+$/},
         "test-select": {helper: "not-executable", instances: ["default"],
-          thread: /^[0-9]{1,8}$/, receipt: "selected"}
+          thread: /^[0-9]{1,8}$/}
       }
       check(!!Navigation.validate(production).target, "production target")
       check(!Navigation.validate(target("test-open", "task_a")).target, "test descriptor not shipped")
@@ -77,17 +77,8 @@ QtObject {
       check(!Navigation.result(JSON.stringify(Object.assign({}, receipt, {command: "evil"})), 0, req, fixtures), "receipt routing field")
       check(!Navigation.result(JSON.stringify(receipt) + JSON.stringify(receipt), 0, req, fixtures), "single receipt")
       check(!Navigation.result("x".repeat(4097), 0, req, fixtures), "receipt byte cap")
+      check(!Navigation.result(JSON.stringify(Object.assign({}, receipt, {resolution: "selected"})), 0, req, fixtures), "only opened receipts")
       req = Navigation.request("select", target("test-select", "42"), fixtures)
-      receipt.requestId = "select"
-      check(!Navigation.result(JSON.stringify(receipt), 0, req, fixtures), "selected policy cannot degrade")
-      receipt.resolution = "selected"
-      receipt.selectedThreadId = "42"
-      check(!!Navigation.result(JSON.stringify(receipt), 0, req, fixtures), "selection receipt")
-      receipt.selectedThreadId = "43"
-      check(!Navigation.result(JSON.stringify(receipt), 0, req, fixtures), "selection ID mismatch")
-      receipt.selectedThreadId = "42"
-      receipt.instance = "nightly"
-      check(!Navigation.result(JSON.stringify(receipt), 0, req, fixtures), "selection instance mismatch")
       var failure = {version: 1, requestId: "select", ok: false, code: "timeout", message: "Retry."}
       check(!!Navigation.result(JSON.stringify(failure), 1, req, fixtures), "typed failure")
       check(!Navigation.result(JSON.stringify(failure), 0, req, fixtures), "failure cannot exit zero")

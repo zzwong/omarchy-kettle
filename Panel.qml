@@ -105,7 +105,6 @@ Panel {
   // does nothing visible when herdr is on another workspace.
   function jump(pot) {
     if (!pot) return
-    navigator.outcome = ""
     root.close()
 
     // Terminal hooks carry a window address resolved via an OSC 2 title
@@ -377,7 +376,9 @@ Panel {
   // first arrow press lands on the top pot rather than moving off it.
   property int cursor: -1
 
-  onOpenedChanged: { cursor = -1; list.contentY = 0 }
+  // A failure reopens the panel to show its retry message; once the panel
+  // closes, the next open must show the pot count again.
+  onOpenedChanged: { cursor = -1; list.contentY = 0; if (!opened) navigator.outcome = "" }
 
   function moveCursor(delta) {
     var n = store.pots.length
@@ -568,6 +569,7 @@ Panel {
           wrapMode: Text.WordWrap
           maximumLineCount: 3
           elide: Text.ElideRight
+          horizontalAlignment: Text.AlignRight
           width: Math.max(0, parent.width - title.width - Style.space(12))
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter

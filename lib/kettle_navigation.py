@@ -63,12 +63,19 @@ class Runner:
             self.child.terminate()
         raise NavigationError("cancelled")
 
-    def command(self, argv, cap=262144, limit=2):
+    def command(self, argv, cap=262144, limit=2, capture=True):
         self.remaining()
         end = min(self.deadline, time.monotonic() + limit)
         try:
-            # Bound every transport pipe and discard private error context.
-            self.child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            # Bound every transport pipe and discard private error context. An
+            # opener's output is never read: a URL handler can exec the app it
+            # starts, which would inherit the pipe and keep it open for life.
+            self.child = subprocess.Popen(argv, stderr=subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE if capture else subprocess.DEVNULL)
+            if not capture:
+                if self.child.wait(timeout=max(0, end - time.monotonic())) != 0:
+                    raise NavigationError("transport-failed")
+                return ""
             with selectors.DefaultSelector() as selector:
                 selector.register(self.child.stdout, selectors.EVENT_READ)
                 data = bytearray()
@@ -105,7 +112,8 @@ class Runner:
                     except subprocess.TimeoutExpired:
                         self.child.kill()
                         self.child.wait(timeout=0.1)
-                self.child.stdout.close()
+                if self.child.stdout:
+                    self.child.stdout.close()
                 self.child = None
 
     def compositor(self, name):

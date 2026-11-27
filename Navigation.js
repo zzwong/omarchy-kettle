@@ -3,7 +3,7 @@
 // Shipped descriptors only. Events select an entry, never a command or URL.
 var adapters = {
   "codex-desktop": {
-    helper: "kettle-codex-jump", instances: ["default"], receipt: "opened",
+    helper: "kettle-codex-jump", instances: ["default"],
     thread: /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
   }
 }
@@ -91,12 +91,8 @@ function result(text, code, pending, registry) {
     }
     var adapter = descriptor(pending.target.app, registry)
     if (code !== 0 || r.ok !== true || !adapter || !address(r.window)
-        || !fields(r, ["version", "requestId", "ok", "resolution", "window", "selectedThreadId", "instance"])) return null
-    if (r.resolution === "selected") {
-      if (r.selectedThreadId !== pending.target.threadId
-          || (r.instance !== undefined && r.instance !== pending.target.instance)) return null
-    } else if (r.resolution !== "opened" || adapter.receipt !== "opened"
-        || r.selectedThreadId !== undefined || r.instance !== undefined) return null
+        || r.resolution !== "opened"
+        || !fields(r, ["version", "requestId", "ok", "resolution", "window"])) return null
     r.window = address(r.window)
     return r
   } catch (e) { return null }

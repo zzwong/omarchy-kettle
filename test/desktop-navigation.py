@@ -130,6 +130,17 @@ class DesktopNavigation(unittest.TestCase):
             self.assertNotEqual(self.run_opener(request=invalid).returncode, 0)
         self.assertFalse((self.path / "url").exists())
 
+    def test_app_started_by_opener_does_not_hold_the_helper(self):
+        # The started app outlives the opener; it must not inherit a pipe the
+        # helper waits on, or every cold start reads as a timeout.
+        pid = self.path / "app.pid"
+        (self.path / "xdg-open").write_text(f"#!/bin/bash\nsleep 30 &\necho $! > {pid}\nexit 0\n")
+        self.addCleanup(lambda: pid.exists() and os.kill(int(pid.read_text()), 15))
+        begin = time.monotonic()
+        result = self.run_opener()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertLess(time.monotonic() - begin, 3)
+
     def test_failed_focus_keeps_pot(self):
         self.env["KETTLE_NAV_FOCUS_EXIT"] = "1"
         result = self.run_opener()

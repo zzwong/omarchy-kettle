@@ -11,7 +11,7 @@ from kettle_navigation import NavigationError, fullmatch, serve
 def open_chat(runner, target):
     classes = ("chatgpt", "codex")
     # Backend resume controls execution, not selection of an existing UI chat.
-    runner.command(["xdg-open", "codex://threads/" + target["threadId"]], cap=4096, limit=5)
+    runner.command(["xdg-open", "codex://threads/" + target["threadId"]], limit=5, capture=False)
     for _ in range(15):
         clients = runner.compositor("clients")
         hits = [c for c in clients if isinstance(c, dict)

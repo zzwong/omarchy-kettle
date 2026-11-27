@@ -14,11 +14,6 @@ QtObject {
   property string b: "11111111-1111-4111-8111-111111111112"
   function check(condition, label) { if (!condition) throw new Error(label); checks++ }
   function emit(id, state) { pots.ingest({id: id, agent: "codex", state: state, desktopThread: id}) }
-  function owned(app, instance, thread) {
-    pots.ingest({id: "provider_shared", agent: "codex", state: "finished", navigation: {
-      version: 1, kind: "desktop-chat", app: app, instance: instance, threadId: thread}})
-    return pots.hookPots["agent:desktop:" + app + ":" + instance + ":provider_shared"]
-  }
   function pot(id) { return pots.hookPots["agent:" + id] }
   function mode(value) { nav.jumper.environment = {KETTLE_TEST_MODE: value} }
   function finish(error) {
