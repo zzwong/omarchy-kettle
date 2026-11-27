@@ -429,6 +429,66 @@ json.dump({'theme': 'auto', 'hooks': {'Stop': [{'hooks': [
     rm -rf "$R"
   done
 
+  # ---- planted staging and backup links are not followed -------------------
+  # Writers staged through a fixed path.kettle-tmp opened with O_TRUNC, and pi's
+  # backup used shutil.copy2: a symlink planted at either got its target
+  # overwritten, and the config became that symlink.
+  local S; S=$(mktemp -d)
+  mkdir -p "$S/.claude" "$S/.pi/agent" "$S/.grok/hooks"
+  printf '{"theme":"auto"}\n' > "$S/.claude/settings.json"
+  printf '{"theme":"dark","apiKey":"sk-secret"}\n' > "$S/.pi/agent/settings.json"
+  printf 'victim\n' > "$S/victim"; chmod 644 "$S/victim"
+  ln -s "$S/victim" "$S/.claude/settings.json.kettle-tmp"
+  ln -s "$S/victim" "$S/.pi/agent/settings.json.kettle-tmp"
+  ln -s "$S/victim" "$S/.pi/agent/settings.json.kettle-bak"
+  ln -s "$S/victim" "$S/.grok/hooks/kettle.json"
+  HOME="$S" CLAUDE_CONFIG_DIR="$S/.claude" CODEX_HOME="$S/.codex" \
+    PI_CODING_AGENT_DIR="$S/.pi/agent" "$ROOT/bin/kettle-install" >/dev/null 2>&1
+  is "a planted staging or backup link's target is untouched" \
+     "$(cat "$S/victim") $(stat -c %a "$S/victim")" "victim 644"
+  is "  and every config is a regular file" \
+     "$(stat -c %F "$S/.claude/settings.json" "$S/.pi/agent/settings.json" \
+        "$S/.pi/agent/settings.json.kettle-bak" "$S/.grok/hooks/kettle.json" | sort -u)" "regular file"
+  is "  and the backup is a byte copy" \
+     "$(cat "$S/.pi/agent/settings.json.kettle-bak")" '{"theme":"dark","apiKey":"sk-secret"}'
+  is "  and no stage is left behind" \
+     "$(find "$S" -name '*.kettle-tmp.*' | wc -l)" "0"
+  rm -rf "$S"
+
+  # ---- kettle-remote's remote-side writers ---------------------------------
+  # An ssh stub runs the remote script locally under a second fake HOME, so the
+  # real install/uninstall scripts run with no host.
+  local wi wr
+  wi=$(sed -n "/^WRITE_PY=/,/^)/p" "$ROOT/bin/kettle-install")
+  wr=$(sed -n "/^WRITE_PY=/,/^)/p" "$ROOT/bin/kettle-remote")
+  [[ $wi == *mkstemp* && $wi == "$wr" ]] && ok "kettle-remote ships kettle-install's writer" \
+    || no "kettle-remote ships kettle-install's writer" "WRITE_PY differs or is missing"
+  local X; X=$(mktemp -d); mkdir -p "$X/stub" "$X/local" "$X/remote/.claude"
+  cat > "$X/stub/ssh" <<'SH'
+#!/bin/bash
+while [[ $1 == -* ]]; do [[ $1 == -o ]] && shift; shift; done
+shift
+HOME=$KETTLE_TEST_REMOTE_HOME exec bash -c "$*"
+SH
+  chmod +x "$X/stub/ssh"
+  printf '{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}\n' \
+    > "$X/remote/.claude/settings.json"
+  printf 'victim\n' > "$X/victim"; chmod 644 "$X/victim"
+  ln -s "$X/victim" "$X/remote/.claude/settings.json.kettle-tmp"
+  ln -s "$X/victim" "$X/remote/.claude/settings.json.kettle-bak"
+  local rx=(env HOME="$X/local" XDG_CONFIG_HOME="$X/local" XDG_RUNTIME_DIR="$X/local"
+            KETTLE_TEST_REMOTE_HOME="$X/remote" PATH="$X/stub:$PATH" "$ROOT/bin/kettle-remote")
+  "${rx[@]}" install kettle-test-host >/dev/null 2>&1
+  is "remote install writes hooks past a planted stage link" \
+     "$(python3 -c "import json;print(len(json.load(open('$X/remote/.claude/settings.json'))['hooks']))")" "5"
+  "${rx[@]}" uninstall kettle-test-host >/dev/null 2>&1
+  is "  and uninstall leaves only the foreign hook" \
+     "$(tr -d ' \n' < "$X/remote/.claude/settings.json")" \
+     '{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}'
+  is "  and the planted link's target is untouched" \
+     "$(cat "$X/victim") $(stat -c %a "$X/victim")" "victim 644"
+  rm -rf "$X"
+
   export HOME="$RH"
   unset CLAUDE_CONFIG_DIR CODEX_HOME
   rm -rf "$T"
