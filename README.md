@@ -236,14 +236,34 @@ handler rather than guessing.
 
 Sessions in a [Rex](https://www.superlogical.com/rex) pane keep the title
 inside Rex, so the nonce never reaches a window. The hook sends the pane's
-`REX_SESSION` and `REX_BLOCK` instead, and a click tells rex-gui to show that
-session (`session.select`) and the server to focus that block, then raises
-rex-gui. A remote host also reports its tailscale name, which Kettle accepts
-only if it matches one of rex-gui's configured remote hosts; the configured
-address is the one dialled. The `rex` CLI must be on PATH locally. rex-gui's
-`client_label` names its client; without one, Kettle looks for the single app
-client from this machine. A Rex pot cannot tell whether you were watching it,
-so a finished one always shows.
+`REX_SESSION` and `REX_BLOCK` instead. A click asks the Rex app on this
+machine to show that session (`session.select`) and the server to focus that
+block, then raises the app's window. These are Rex protocol actions, so any
+app client that implements `session.select` works: rex-gui, rex-rune, or
+another. For a remote pot, `rex` runs on that host over your ControlMaster
+(~190ms a call, measured with `date +%s%N`), at the path `kettle-remote
+install` found; locally, `rex` must be on PATH. A Rex pot cannot tell whether
+you were watching it, so a finished one always shows.
+
+The app to drive is the one connected from this machine: by tailscale node
+name on a remote server, or any app client on the local one. When that is
+ambiguous, or your app reaches the server over `ssh://`, set
+[`rexClient`](#rexclient).
+
+### `rexClient`
+
+A client label, ID (or its last six characters), or client name as `rex
+client ls` shows them:
+
+```json
+{ "id": "zzwong.kettle", "rexClient": "rex-rune" }
+```
+
+### `rexWindow`
+
+Kettle finds the Rex app's window by its process: the client's pid on the
+local server, or its client name matched against local process names. If
+neither finds it, set a title or class substring, as for `herdrWindow`.
 
 ### `herdrWindow`
 
@@ -385,6 +405,8 @@ offers them directly; they can also be set by hand on the widget's entry in
 | `notifications` | `true` | desktop notification on state changes |
 | `herdrWindow` | `""` | title/class substring identifying herdr's window |
 | `remoteWindow` | `""` | same, for the terminal holding your ssh session; empty matches the host name |
+| `rexClient` | `""` | Rex app to drive: client label, ID or name; empty picks this machine's one |
+| `rexWindow` | `""` | title/class substring of the Rex app's window, if it is not found by process |
 
 ## Known limitations
 

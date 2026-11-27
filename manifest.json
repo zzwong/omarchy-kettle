@@ -20,7 +20,9 @@
       "showCount": true,
       "notifications": true,
       "herdrWindow": "",
-      "remoteWindow": ""
+      "remoteWindow": "",
+      "rexClient": "",
+      "rexWindow": ""
     },
     "schema": [
       {
@@ -45,6 +47,18 @@
         "key": "remoteWindow",
         "type": "string",
         "label": "Title substring of the terminal holding your ssh session",
+        "defaultValue": ""
+      },
+      {
+        "key": "rexClient",
+        "type": "string",
+        "label": "Rex app to jump in: client label, ID or name",
+        "defaultValue": ""
+      },
+      {
+        "key": "rexWindow",
+        "type": "string",
+        "label": "Title or class substring of the Rex app's window",
         "defaultValue": ""
       }
     ]

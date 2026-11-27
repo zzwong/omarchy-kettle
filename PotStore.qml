@@ -328,8 +328,6 @@ QtObject {
       desktopThread: desktopThread,
       rexSession: rexSession,
       rexBlock: rexSession ? canonRex(ev.rexBlock, "block") : "",
-      rexServer: rexSession && /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(String(ev.rexServer || ""))
-        ? String(ev.rexServer) : "",
       host: String(ev.host || ""),
       agentKind: String(ev.agent || ""),
       message: String(ev.message || "").slice(0, 160),

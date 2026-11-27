@@ -188,11 +188,10 @@ QtObject {
       // anything that matters — but stripping it would blank the model on
       // every remote pot.
       model: String(raw.model || "").slice(0, 40).replace(/[^A-Za-z0-9._-]/g, ""),
-      // Matched against rex-gui's own host list before anything dials it.
+      // Argv for the jump, which runs rex on `host`, never a server the
+      // payload names.
       rexSession: rexId(raw.rexSession, "session"),
       rexBlock: rexId(raw.rexBlock, "block"),
-      rexServer: /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(String(raw.rexServer || ""))
-        ? String(raw.rexServer) : "",
       host: host,
       window: "",
       focused: false

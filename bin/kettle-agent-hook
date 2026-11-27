@@ -207,32 +207,11 @@ if (( ! REMOTE )) && [[ $agent == codex && ${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:
 fi
 
 # A Rex pane keeps OSC 2 inside Rex: no OS window ever carries the nonce, so
-# it is addressed by the session and block Rex puts in its environment. A
-# remote also names its server, by the tailscale name rex-gui would dial;
-# that costs one rex call per session, cached like the window address.
-rex_session="" rex_block="" rex_server=""
+# it is addressed by the session and block Rex puts in its environment.
+rex_session="" rex_block=""
 rex_uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 if [[ -z $desktop_thread && ${REX_SESSION:-} =~ ^session:$rex_uuid$ && ${REX_BLOCK:-} =~ ^block:$rex_uuid$ ]]; then
   rex_session=$REX_SESSION rex_block=$REX_BLOCK
-  rex_file="$STATE_DIR/$sid.rex"
-  if (( REMOTE )) && [[ $state != "gone" ]]; then
-    if [[ -f $rex_file ]]; then
-      rex_server=$(<"$rex_file")
-    else
-      rex_bin="${REX_BIN_DIR:-}/rex"
-      [[ -x $rex_bin ]] || rex_bin=$(command -v rex 2>/dev/null)
-      [[ -n $rex_bin ]] && rex_server=$("$rex_bin" server status --json --autostart=false --timeout 1s 2>/dev/null \
-        | python3 -c '
-import json, sys
-try: t = json.load(sys.stdin).get("tailscale") or {}
-except Exception: sys.exit(0)
-if t.get("state") == "running": print(str(t.get("dns_name") or "").rstrip("."))
-' 2>/dev/null)
-      [[ $rex_server =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || rex_server=""
-      mkdir -p "$STATE_DIR" && printf '%s' "$rex_server" > "$rex_file"
-    fi
-  fi
-  [[ $state == "gone" ]] && rm -f "$rex_file"
 fi
 
 # ---- window identity -------------------------------------------------------
@@ -396,10 +375,9 @@ print(base64.b64encode(json.dumps({
     "desktopThread": sys.argv[9],
     "rexSession": sys.argv[10],
     "rexBlock": sys.argv[11],
-    "rexServer": sys.argv[12],
 }).encode()).decode())
 ' "$sid" "$state" "$cwd" "$message" "$addr" "$focused" "$agent" "${model:-}" "$desktop_thread" \
-  "$rex_session" "$rex_block" "$rex_server" 2>/dev/null)
+  "$rex_session" "$rex_block" 2>/dev/null)
 
 [[ -z $b64 ]] && exit 0
 

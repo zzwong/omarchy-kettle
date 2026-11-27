@@ -76,6 +76,11 @@ Panel {
   // Empty falls back to the host name, which matches herdr's default remote
   // window title of "{hostname}: {workspace}".
   readonly property string remoteWindow: setting("remoteWindow", "")
+  // Which Rex app to drive when more than one from this machine is connected
+  // (a label, ID or client name), and a title or class substring for its
+  // window when its pid cannot be learned.
+  readonly property string rexClient: setting("rexClient", "")
+  readonly property string rexWindow: setting("rexWindow", "")
 
   // More than one distinct host among the pots (local counts as one) switches
   // the list into grouped rendering: host header rows, no per-row host tag.
@@ -116,7 +121,7 @@ Panel {
         if (rexJumper.running) return
         rexJumper.pot = pot
         rexJumper.command = [root.pluginDir + "bin/kettle-rex-jump",
-          pot.rexSession, pot.rexBlock, pot.rexServer || "", pot.host || ""]
+          pot.rexSession, pot.rexBlock, pot.host || "", root.rexClient]
         rexJumper.running = true
         return
       }
@@ -182,7 +187,8 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         var addr = store.canonAddr(String(text || "").trim())
-        if (addr) root.focusWindow(addr)
+        if (root.rexWindow) root.raise(root.rexWindow)
+        else if (addr) root.focusWindow(addr)
       }
     }
     stderr: StdioCollector {

@@ -82,8 +82,13 @@ cmd_install() {
   local herdr_path
   herdr_path=$(ssh -o BatchMode=yes -o ControlMaster=no "$host" \
     'bash -lc "command -v herdr" 2>/dev/null || zsh -lc "command -v herdr" 2>/dev/null' 2>/dev/null | head -1 | tr -d "\r")
+  # Same for rex, which a jump to a Rex pane runs there.
+  local rex_path
+  rex_path=$(ssh -o BatchMode=yes -o ControlMaster=no "$host" \
+    'bash -lc "command -v rex" 2>/dev/null || zsh -lc "command -v rex" 2>/dev/null' 2>/dev/null | head -1 | tr -d "\r")
   {
     [[ -n $herdr_path ]] && printf 'herdr=%s\n' "$herdr_path"
+    [[ -n $rex_path ]] && printf 'rex=%s\n' "$rex_path"
     [[ -n $session ]] && printf 'session=%s\n' "$session"
   } > "$HOSTS/$host"
   chmod 600 "$HOSTS/$host"
