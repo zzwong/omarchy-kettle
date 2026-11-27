@@ -48,9 +48,9 @@ esac
 
 [[ -x $HOOK ]] || { echo "kettle-agent-hook not executable at $HOOK" >&2; exit 1; }
 
-# Shared by every embedded writer below; py() prepends it to the script.
-WRITE_PY=$(cat <<'PY'
-import json, os, tempfile
+# Shared by every embedded script below; py() prepends it.
+KETTLE_PY=$(cat <<'PY'
+import json, os, shlex, tempfile
 
 def write_file(path, data, mode=None):
     # A fresh mkstemp name, not a fixed path.kettle-tmp: a symlink planted
@@ -75,9 +75,50 @@ def write_file(path, data, mode=None):
 
 def write_json(path, doc, mode=None):
     write_file(path, (json.dumps(doc, indent=2) + "\n").encode(), mode)
+
+def is_ours_hook(entry, hook):
+    # Match the script name, not the path, so --remove from a second clone
+    # still finds the entry the first one wrote. A mention, wrapper, expansion
+    # or lookalike name is someone else's command.
+    if not isinstance(entry, dict) or entry.get("type") != "command":
+        return False
+    command = entry.get("command")
+    if not isinstance(command, str):
+        return False
+    if command == hook:
+        return True
+    name = os.path.basename(hook)
+    if any(char in command for char in "$`;&|<>(){}*?[]\r\n\0"):
+        return False
+    # Older clones wrote the path unquoted, so one under a directory with a
+    # space left a command whose first word is no program. A wrapper's first
+    # word is one, and stays foreign.
+    if (os.path.isabs(command) and command.endswith("/bin/" + name)
+            and not os.path.exists(command.split()[0])):
+        return True
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return len(words) == 1 and os.path.isabs(words[0]) and os.path.basename(words[0]) == name
+
+def without_ours(group, hook):
+    # Drops only Kettle's commands; a mixed group keeps its other commands
+    # and its matcher.
+    kept, removed = [], False
+    for entry in group:
+        original = entry.get("hooks", [])
+        remaining = [h for h in original if not is_ours_hook(h, hook)]
+        if len(remaining) == len(original):
+            kept.append(entry)
+        else:
+            removed = True
+            if remaining:
+                kept.append({**entry, "hooks": remaining})
+    return kept, removed
 PY
 )
-py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
+py() { { printf '%s\n' "$KETTLE_PY"; cat; } | python3 - "$@"; }
 
 # merge <file> <mode> <hook> <style> <unit> <async> <events...>
 #   style: "wrapped" nests events under a "hooks" key (Claude, Codex, Qwen,
@@ -91,7 +132,7 @@ py() { { printf '%s\n' "$WRITE_PY"; cat; } | python3 - "$@"; }
 merge() {
   local file=$1 mode=$2 hook=$3 style=$4 unit=$5 use_async=$6; shift 6
   py "$file" "$mode" "$hook" "$style" "$unit" "$use_async" "$@" <<'PY'
-import json, os, shlex, sys
+import json, os, sys
 
 path, mode, hook, style, unit, use_async, *events = sys.argv[1:]
 
@@ -114,49 +155,11 @@ else:
     hooks = doc.setdefault("hooks", {})
 changed = False
 
-# Match the script name, not the path, so --remove from a second clone still
-# finds the entry the first one wrote.
-hook_name = os.path.basename(hook)
-
-def is_ours_hook(entry):
-    if not isinstance(entry, dict) or entry.get("type") != "command":
-        return False
-    command = entry.get("command")
-    if not isinstance(command, str):
-        return False
-    if command == hook:
-        return True
-    # Older clones wrote absolute paths. Recognize a single literal command,
-    # never a mention, wrapper, expansion or lookalike executable name.
-    if any(char in command for char in "$`;&|<>(){}*?[]\r\n\0"):
-        return False
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return False
-    return (len(words) == 1 and os.path.isabs(words[0])
-            and os.path.basename(words[0]) == hook_name)
-
-
-def without_ours(group):
-    kept = []
-    removed = False
-    for entry in group:
-        original = entry.get("hooks", [])
-        remaining = [item for item in original if not is_ours_hook(item)]
-        if len(remaining) == len(original):
-            kept.append(entry)
-        else:
-            removed = True
-            if remaining:
-                kept.append({**entry, "hooks": remaining})
-    return kept, removed
-
 for event in events:
     group = hooks.get(event) or []
 
     if mode == "remove":
-        kept, removed = without_ours(group)
+        kept, removed = without_ours(group, hook)
         if removed:
             changed = True
             if kept:
@@ -165,7 +168,7 @@ for event in events:
                 hooks.pop(event, None)
         continue
 
-    ours = [h for e in group for h in e.get("hooks", []) if is_ours_hook(h)]
+    ours = [h for e in group for h in e.get("hooks", []) if is_ours_hook(h, hook)]
 
     if mode == "check":
         print(f"  {event:<18} {'ok' if ours else 'MISSING'}")

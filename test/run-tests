@@ -455,14 +455,52 @@ json.dump({'theme': 'auto', 'hooks': {'Stop': [{'hooks': [
      "$(find "$S" -name '*.kettle-tmp.*' | wc -l)" "0"
   rm -rf "$S"
 
+  # ---- only Kettle's own commands are Kettle's -----------------------------
+  # Ownership was "the script name appears in the command", and remove dropped
+  # the whole group: a mention or lookalike was rewritten to Kettle's hook on
+  # install, and a foreign command sharing a group with Kettle's was deleted.
+  local O; O=$(mktemp -d); mkdir -p "$O/.claude"
+  cat > "$O/.claude/settings.json" <<'J'
+{"theme": "auto", "hooks": {
+  "Stop": [
+    {"matcher": "*", "hooks": [
+      {"type": "command", "command": "/old/bin/kettle-agent-hook"},
+      {"type": "command", "command": "/usr/bin/true", "timeout": 23}]},
+    {"hooks": [{"type": "command", "command": "echo kettle-agent-hook >> /dev/null"}]},
+    {"hooks": [{"type": "command", "command": "/opt/x/not-kettle-agent-hook"}]},
+    {"hooks": [{"type": "command", "command": "/usr/bin/env /old/bin/kettle-agent-hook"}]},
+    {"hooks": [{"type": "prompt", "command": "/old/bin/kettle-agent-hook"}]}],
+  "SessionStart": [{"hooks": [{"type": "command", "command": "\"/old clone/bin/kettle-agent-hook\""}]}],
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/old clone/bin/kettle-agent-hook"}]}],
+  "Notification": [{"hooks": [{"type": "command", "command": "kettle-agent-hook"}]}]}}
+J
+  local oc=(env HOME="$O" CLAUDE_CONFIG_DIR="$O/.claude" CODEX_HOME="$O/.codex" "$ROOT/bin/kettle-install")
+  cmds() { python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1])).get('hooks', {})
+print(' | '.join(ev + '=' + ','.join(h['command'] for g in d[ev] for h in g['hooks']) for ev in sorted(d)))" "$O/.claude/settings.json"; }
+  "${oc[@]}" >/dev/null 2>&1
+  local H="$ROOT/bin/kettle-agent-hook" F="echo kettle-agent-hook >> /dev/null,/opt/x/not-kettle-agent-hook,/usr/bin/env /old/bin/kettle-agent-hook,/old/bin/kettle-agent-hook"
+  is "install repoints moved, quoted and unquoted-space old paths, nothing else" "$(cmds)" \
+     "Notification=kettle-agent-hook,$H | SessionEnd=$H | SessionStart=$H | Stop=$H,/usr/bin/true,$F | UserPromptSubmit=$H"
+  before=$(md5sum "$O/.claude/settings.json")
+  "${oc[@]}" --check >/dev/null 2>&1
+  is "  and --check changes nothing" "$(md5sum "$O/.claude/settings.json")" "$before"
+  "${oc[@]}" --remove >/dev/null 2>&1
+  is "  and remove keeps foreign commands and the mixed group's matcher" "$(cmds)" \
+     "Notification=kettle-agent-hook | Stop=/usr/bin/true,$F"
+  is "  with its other keys intact" \
+     "$(python3 -c "import json;g=json.load(open('$O/.claude/settings.json'))['hooks']['Stop'][0];print(g['matcher'], g['hooks'][0]['timeout'])")" "* 23"
+  rm -rf "$O"
+
   # ---- kettle-remote's remote-side writers ---------------------------------
   # An ssh stub runs the remote script locally under a second fake HOME, so the
   # real install/uninstall scripts run with no host.
   local wi wr
-  wi=$(sed -n "/^WRITE_PY=/,/^)/p" "$ROOT/bin/kettle-install")
-  wr=$(sed -n "/^WRITE_PY=/,/^)/p" "$ROOT/bin/kettle-remote")
-  [[ $wi == *mkstemp* && $wi == "$wr" ]] && ok "kettle-remote ships kettle-install's writer" \
-    || no "kettle-remote ships kettle-install's writer" "WRITE_PY differs or is missing"
+  wi=$(sed -n "/^KETTLE_PY=/,/^)/p" "$ROOT/bin/kettle-install")
+  wr=$(sed -n "/^KETTLE_PY=/,/^)/p" "$ROOT/bin/kettle-remote")
+  [[ $wi == *mkstemp* && $wi == "$wr" ]] && ok "kettle-remote ships kettle-install's helpers" \
+    || no "kettle-remote ships kettle-install's helpers" "KETTLE_PY differs or is missing"
   local X; X=$(mktemp -d); mkdir -p "$X/stub" "$X/local" "$X/remote/.claude"
   cat > "$X/stub/ssh" <<'SH'
 #!/bin/bash
@@ -481,10 +519,18 @@ SH
   "${rx[@]}" install kettle-test-host >/dev/null 2>&1
   is "remote install writes hooks past a planted stage link" \
      "$(python3 -c "import json;print(len(json.load(open('$X/remote/.claude/settings.json'))['hooks']))")" "5"
+  # Uninstall dropped any group whose commands mentioned the script name.
+  python3 -c "
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d['hooks']['Stop'][1]['matcher'] = '*'
+d['hooks']['Stop'][1]['hooks'].append({'type': 'command', 'command': '/usr/bin/false'})
+d['hooks']['Stop'].append({'hooks': [{'type': 'command', 'command': 'echo kettle-agent-hook'}]})
+json.dump(d, open(p, 'w'))" "$X/remote/.claude/settings.json"
   "${rx[@]}" uninstall kettle-test-host >/dev/null 2>&1
-  is "  and uninstall leaves only the foreign hook" \
+  is "  and uninstall keeps foreign commands, mixed groups included" \
      "$(tr -d ' \n' < "$X/remote/.claude/settings.json")" \
-     '{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}'
+     '{"theme":"auto","hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]},{"hooks":[{"type":"command","command":"/usr/bin/false"}],"matcher":"*"},{"hooks":[{"type":"command","command":"echokettle-agent-hook"}]}]}}'
   is "  and the planted link's target is untouched" \
      "$(cat "$X/victim") $(stat -c %a "$X/victim")" "victim 644"
   rm -rf "$X"
@@ -1422,13 +1468,6 @@ except Exception: print('<no-json: ' + sys.argv[1] + '>')
   is "removing a host destroys only it"      "$(l after-remove)" '["-a"]'
 }
 
-# Pure embedded merge logic only: no installer/configuration writes are run.
-test_installownership() {
-  echo "installownership"
-  python3 "$ROOT/test/install-ownership.py" "$ROOT/bin/kettle-install" \
-    && ok "installer hook ownership" || no "installer hook ownership"
-}
-
 # ---------------------------------------------------------------- emit tests
 # kettle-emit is the public integration contract; its payload shape is what
 # third parties build against, so pin it.
@@ -1774,7 +1813,7 @@ EOF
   is "an unchanged herdr snapshot does not re-notify" "$(notify_result unchanged-snapshot)" ""
 }
 
-groups=(${1:-structure coherence hook emit installownership install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
+groups=(${1:-structure coherence hook emit install guard stream pimodel notifications notifyqml address duration hookwindows desktop reachability hostmodel relay})
 for g in "${groups[@]}"; do "test_$g"; done
 
 echo
